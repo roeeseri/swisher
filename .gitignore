@@ -1,0 +1,17 @@
+.venv/
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.cache/
+.mypy_cache/
+*.egg-info/
+tmp/
+output/
+data/sessions/*
+!data/sessions/.gitkeep
+models/*.task
+artifacts/
+*.mov
+*.mp4
