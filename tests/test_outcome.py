@@ -13,8 +13,8 @@ def test_detects_downward_crossing_inside_rim() -> None:
         {"frame": 4, "center": np.array([134.0, 140.0]), "confidence": 0.8},
     ]
     outcome = _shot_outcome(observations, rim)
-    assert outcome.status == "made"
-    assert outcome.confidence > 0.7
+    assert outcome.status == "unknown"  # 2D overlap is not evidence of depth
+    assert outcome.confidence == 0
 
 
 def test_abstains_without_rim() -> None:

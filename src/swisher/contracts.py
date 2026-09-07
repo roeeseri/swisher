@@ -34,7 +34,7 @@ class ShotMetrics(BaseModel):
     jump_height_body_ratio: float | None = None
     landing_drift_shoulder_widths: float | None = None
     follow_through_hold_seconds: float | None = None
-    source: str = "mediapipe_pose_v0.1"
+    source: str = "mediapipe_pose_2d_v0.3_experimental"
 
 
 class DetectionSummary(BaseModel):
@@ -62,6 +62,9 @@ class ReleaseEvent(BaseModel):
     shooting_side: str
     wrist_ball_distance_norm: float
     method: str = "ball_wrist_separation_v0.1"
+    interval_start_frame: int | None = None
+    interval_end_frame: int | None = None
+    review_required: bool = True
 
 
 class ShotOutcome(BaseModel):
@@ -94,3 +97,6 @@ class AnalysisResult(BaseModel):
     quality: QualitySummary
     coaching: CoachingFeedback
     limitations: list[str]
+    schema_version: str = "0.3"
+    candidates: list[dict] = Field(default_factory=list)
+    provenance: dict = Field(default_factory=dict)

@@ -15,8 +15,7 @@ def test_prioritizes_balance_when_consistency_is_low() -> None:
         None,
         [],
     )
-    assert feedback.available is True
-    assert feedback.focus == "יציבות הגוף"
+    assert feedback.available is False  # no release; no personalized technical claim
 
 
 def test_follow_through_feedback_requires_reliable_release() -> None:
@@ -34,4 +33,4 @@ def test_follow_through_feedback_requires_reliable_release() -> None:
         [],
     )
     assert feedback.focus == "Follow-through"
-    assert feedback.confidence == 0.75
+    assert feedback.confidence == 0  # no calibrated probability for coaching benefit

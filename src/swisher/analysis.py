@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import time
 from collections.abc import Callable
+from contextlib import contextmanager
+from importlib.metadata import version
 from itertools import pairwise
 from pathlib import Path
 
 import cv2
-import mediapipe as mp
 import numpy as np
 
+from swisher import pose_backend
 from swisher.contracts import (
     AnalysisResult,
     CoachingFeedback,
@@ -21,6 +26,7 @@ from swisher.contracts import (
 )
 from swisher.detection import RfDetrDetector, padded_crop, select_primary_player, smooth_box
 from swisher.geometry import angle_deg, trunk_lean_deg
+from swisher.proposals import propose_shots
 from swisher.rim import GroundingDinoRimDetector, RimDetection
 
 ProgressCallback = Callable[[float], None]
@@ -33,7 +39,15 @@ def analyze_video(
     input_path: Path,
     output_path: Path,
     on_progress: ProgressCallback | None = None,
+    *,
+    player_region: tuple[int, int, int, int] | None = None,
+    thorough: bool = False,
+    search_rim: bool = False,
+    trace_path: Path | None = None,
 ) -> AnalysisResult:
+    if input_path.resolve() == output_path.resolve():
+        raise ValueError("אסור לדרוס את סרטון המקור")
+    started = time.monotonic()
     capture = cv2.VideoCapture(str(input_path))
     if not capture.isOpened():
         raise ValueError("לא ניתן לקרוא את קובץ הווידאו")
@@ -57,8 +71,17 @@ def analyze_video(
         duration_seconds=frame_count / fps,
     )
 
-    writer = _video_writer(output_path, fps, width, height)
-    pose_module = mp.solutions.pose
+    if player_region is not None:
+        x1, y1, x2, y2 = player_region
+        if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+            capture.release()
+            raise ValueError("אזור השחקן חורג מגבולות התמונה")
+    try:
+        writer = _video_writer(output_path, fps, width, height)
+    except Exception:
+        capture.release()
+        raise
+    pose_module = pose_backend
     frames: list[dict[str, object]] = []
     detector = RfDetrDetector()
     rim_detector = GroundingDinoRimDetector()
@@ -72,37 +95,61 @@ def analyze_video(
     blur_samples: list[float] = []
     rim_detection: RimDetection | None = None
     rim_attempts = 0
+    stride = 1 if thorough else DETECTION_STRIDE
+    eligible = False
+    ambiguous_frames = 0
 
-    with pose_module.Pose(
-        static_image_mode=True,
-        model_complexity=2,
-        smooth_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    ) as pose:
+    with (
+        _release_resources(capture, writer),
+        pose_module.Pose(
+            static_image_mode=True,
+            model_complexity=2,
+            smooth_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        ) as pose,
+    ):
         index = 0
         while True:
             ok, frame = capture.read()
             if not ok:
                 break
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            if rim_detection is None and index % RIM_SEARCH_STRIDE == 0 and rim_attempts < 3:
+            if (
+                search_rim
+                and rim_detection is None
+                and index % RIM_SEARCH_STRIDE == 0
+                and rim_attempts < 3
+            ):
                 rim_detection = rim_detector.detect(rgb)
                 rim_attempts += 1
-            if index % DETECTION_STRIDE == 0:
+            if index % stride == 0:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 brightness_samples.append(float(np.mean(gray)))
                 blur_samples.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
                 latest_detections = detector.detect(rgb, threshold=0.18)
                 sampled_frames += 1
-                primary = select_primary_player(latest_detections, frame.shape, tracked_box)
+                people = [d for d in latest_detections if d.class_name == "person"]
+                if player_region:
+                    rx1, ry1, rx2, ry2 = player_region
+                    people = [
+                        d for d in people if rx1 <= d.center[0] <= rx2 and ry1 <= d.center[1] <= ry2
+                    ]
+                eligible = len(people) == 1
+                ambiguous_frames += int(len(people) > 1)
+                primary = (
+                    select_primary_player(people, frame.shape, tracked_box) if eligible else None
+                )
                 if primary:
                     player_detected_frames += 1
                     tracked_box = smooth_box(tracked_box, primary.xyxy)
-                if any(item.class_name == "sports_ball" for item in latest_detections):
+                else:
+                    tracked_box = None
+                balls = [d for d in latest_detections if d.class_name == "sports_ball"]
+                if eligible and len(balls) == 1:
                     ball_detected_frames += 1
                     best_ball = max(
-                        (item for item in latest_detections if item.class_name == "sports_ball"),
+                        balls,
                         key=lambda item: item.confidence,
                     )
                     ball_observations.append(
@@ -116,11 +163,14 @@ def analyze_video(
             crop_box = (0, 0, width, height)
             if tracked_box is not None:
                 crop_box = padded_crop(tracked_box, width, height)
+            if player_region is not None:
+                crop_box = player_region
             x1, y1, x2, y2 = crop_box
             crop = rgb[y1:y2, x1:x2]
-            prediction = pose.process(crop) if crop.size else None
+            prediction = pose.process(crop) if crop.size and eligible else None
             landmarks = prediction.pose_landmarks if prediction is not None else None
             record = _extract_record(landmarks, crop_box, index)
+            record["timestamp_ms"] = float(capture.get(cv2.CAP_PROP_POS_MSEC))
             frames.append(record)
 
             if landmarks:
@@ -131,12 +181,18 @@ def analyze_video(
             writer.write(frame)
             index += 1
             if on_progress and index % 5 == 0:
-                on_progress(index / frame_count)
+                on_progress(min(index / frame_count, 1.0))
 
     capture.release()
     writer.release()
     if not frames:
         raise ValueError("לא נמצאו פריימים קריאים")
+    if len(frames) < frame_count:
+        raise ValueError("הסרטון הסתיים לפני מספר הפריימים הצפוי; יש לבדוק את קובץ המקור")
+    if trace_path:
+        with trace_path.open("w", encoding="utf-8") as handle:
+            for record in frames:
+                handle.write(json.dumps(record, default=lambda v: v.tolist()) + "\n")
 
     valid = [frame for frame in frames if bool(frame["valid"])]
     pose_confidence = len(valid) / len(frames)
@@ -148,6 +204,8 @@ def analyze_video(
     mean_brightness = float(np.mean(brightness_samples)) if brightness_samples else 0.0
     mean_blur_score = float(np.mean(blur_samples)) if blur_samples else 0.0
     quality_warnings = _quality_warnings(metadata, mean_brightness, mean_blur_score)
+    if ambiguous_frames:
+        quality_warnings.append("נראו כמה שחקנים באזור הניתוח; הפריימים האלה לא נותחו")
     status = (
         "ok"
         if pose_confidence >= MIN_POSE_CONFIDENCE and player_detection_rate >= 0.8
@@ -159,7 +217,10 @@ def analyze_video(
         else "המודל נמנע מלתת מסקנה: הגוף לא נראה בביטחון מספק ברוב הסרטון."
     )
     outcome = _shot_outcome(ball_observations, rim_detection)
-    coaching = _coaching_feedback(status, metrics, release, quality_warnings)
+    candidates = propose_shots(frames, ball_observations, fps, len(frames), _release_event)
+    coaching = _coaching_feedback(
+        status if len(candidates) == 1 else "abstained", metrics, release, quality_warnings
+    )
     return AnalysisResult(
         status=status,
         message=message,
@@ -190,12 +251,47 @@ def analyze_video(
         limitations=[
             "זיהוי הכדור הוא COCO baseline ועדיין לא fine-tuned לכדורסל מהיר ומטושטש",
             "זיהוי הסל הוא zero-shot ודורש fine-tuning על Golden Dataset",
-            "make/miss נקבע רק כאשר מסלול הכדור חוצה בבירור את מישור הטבעת",
+            "חצייה בתמונה אינה הוכחת קליעה; התוצאה נשארת לא ידועה עד אישור מאמן",
             "release מבוסס על הפרדת כדור-יד ודורש אימות מול release frames מתויגים",
             "זוויות מחושבות בהיטל דו־ממדי ותלויות בזווית המצלמה",
             "המערכת אינה מסיקה עדיין מה גרם לקליעה או להחטאה",
         ],
+        candidates=candidates,
+        provenance={
+            "pipeline": "swisher_0.3",
+            "pose_model": "mediapipe_blazepose_heavy",
+            "pose_api": "Tasks PoseLandmarker IMAGE",
+            "pose_asset_sha256": _file_hash(pose.path),
+            "mediapipe_version": version("mediapipe"),
+            "rfdetr_version": version("rfdetr"),
+            "detector": detector.name,
+            "detection_stride": stride,
+            "player_region": player_region,
+            "processed_frames": len(frames),
+            "elapsed_seconds": round(time.monotonic() - started, 2),
+            "source_sha256": _file_hash(input_path),
+            "pose_confidence_semantics": "valid frame coverage, not calibrated probability",
+            "release_confidence_semantics": "heuristic score, not calibrated probability",
+            "timing": "frame/fps estimates; decoder timestamps saved in trace",
+        },
     )
+
+
+def _file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+@contextmanager
+def _release_resources(capture, writer):
+    try:
+        yield
+    finally:
+        capture.release()
+        writer.release()
 
 
 def _video_writer(path: Path, fps: float, width: int, height: int) -> cv2.VideoWriter:
@@ -263,6 +359,7 @@ def _draw_pose(frame: np.ndarray, record: dict[str, object], connections: object
     if not record["valid"]:
         return
     xy = record["xy"]  # type: ignore[assignment]
+    visibility = record["visibility_by_name"]
     index_to_name = {
         11: "ls",
         12: "rs",
@@ -280,10 +377,14 @@ def _draw_pose(frame: np.ndarray, record: dict[str, object], connections: object
     for start, end in connections:  # type: ignore[union-attr]
         if start not in index_to_name or end not in index_to_name:
             continue
+        if min(visibility[index_to_name[start]], visibility[index_to_name[end]]) < 0.5:
+            continue
         a = tuple(np.round(xy[index_to_name[start]]).astype(int))
         b = tuple(np.round(xy[index_to_name[end]]).astype(int))
         cv2.line(frame, a, b, (255, 180, 30), 2, cv2.LINE_AA)
-    for point in xy.values():
+    for name, point in xy.items():
+        if visibility[name] < 0.5:
+            continue
         cv2.circle(frame, tuple(np.round(point).astype(int)), 4, (0, 220, 255), -1)
 
 
@@ -350,32 +451,18 @@ def _shot_outcome(
         horizontal_center = (previous_center[0] + current_center[0]) / 2
         inside_rim = x1 - margin <= horizontal_center <= x2 + margin
         if crosses_downward and inside_rim:
-            confidence = min(
-                0.92,
-                0.45
-                + 0.25 * rim.confidence
-                + 0.15 * float(previous["confidence"])
-                + 0.15 * float(current["confidence"]),
-            )
             return ShotOutcome(
-                status="made",
-                confidence=confidence,
-                reason="מסלול הכדור חצה מטה את מישור הטבעת בתוך רוחב הסל",
+                status="unknown",
+                confidence=0.0,
+                reason="חצייה בתוך רוחב הסל בתמונה — דרוש אישור מאמן; עומק אינו נמדד",
             )
         near_rim = x1 - rim.width * 1.5 <= horizontal_center <= x2 + rim.width * 1.5
         clearly_outside = horizontal_center < x1 - margin or horizontal_center > x2 + margin
         if crosses_downward and near_rim and clearly_outside:
-            confidence = min(
-                0.88,
-                0.42
-                + 0.2 * rim.confidence
-                + 0.13 * float(previous["confidence"])
-                + 0.13 * float(current["confidence"]),
-            )
             return ShotOutcome(
-                status="missed",
-                confidence=confidence,
-                reason="הכדור חצה מטה את גובה הטבעת מחוץ לרוחב הסל",
+                status="unknown",
+                confidence=0.0,
+                reason="חצייה מחוץ לרוחב הסל בתמונה — דרוש אישור מאמן",
             )
     return ShotOutcome(
         status="unknown",
@@ -395,12 +482,12 @@ def _event_window(valid: list[dict[str, object]], fps: float) -> EventWindow | N
         ]
     )
     if len(wrist_y) >= 5:
-        wrist_y = np.convolve(wrist_y, np.ones(5) / 5, mode="same")
+        wrist_y = np.convolve(np.pad(wrist_y, (2, 2), mode="edge"), np.ones(5) / 5, mode="valid")
     velocity = np.abs(np.gradient(wrist_y, indices))
     peak_pos = int(np.argmax(velocity))
     radius = max(int(fps * 0.75), 4)
-    start_pos = max(0, peak_pos - radius)
-    end_pos = min(len(indices) - 1, peak_pos + radius)
+    start_pos = int(np.searchsorted(indices, indices[peak_pos] - radius))
+    end_pos = min(len(indices) - 1, int(np.searchsorted(indices, indices[peak_pos] + radius)))
     start_frame, end_frame = int(indices[start_pos]), int(indices[end_pos])
     baseline = float(np.median(velocity)) + 1e-6
     confidence = min(float(velocity[peak_pos] / (baseline * 5)), 1.0)
@@ -452,9 +539,7 @@ def _metrics(
         hip_mid = (xy["lh"] + xy["rh"]) / 2
         leans.append(trunk_lean_deg(shoulder_mid, hip_mid))
     consistency = None
-    if leans:
-        robust_range = _robust_range(leans) or 0.0
-        consistency = float(np.clip(1.0 - robust_range / 35.0, 0.0, 1.0))
+    # No unvalidated 0-100 score derived from arbitrary angular thresholds.
     (
         release_elbow,
         release_knee,
@@ -498,10 +583,19 @@ def _release_event(
         pose_frame = min(nearby_frames, key=lambda frame: abs(frame - ball_frame))
         pose = pose_by_frame[pose_frame]
         xy = pose["xy"]  # type: ignore[assignment]
-        shoulder_width = max(float(np.linalg.norm(xy["ls"] - xy["rs"])), 1.0)
+        visibility = pose.get("visibility_by_name", {})
+        if min(visibility.get(k, 0) for k in ("ls", "rs", "lw", "rw")) < 0.5:
+            continue
+        shoulder_width = float(np.linalg.norm(xy["ls"] - xy["rs"]))
+        if shoulder_width < 12:
+            continue
         ball_center = ball["center"]  # type: ignore[assignment]
         left_distance = float(np.linalg.norm(ball_center - xy["lw"])) / shoulder_width
         right_distance = float(np.linalg.norm(ball_center - xy["rw"])) / shoulder_width
+        side = "left" if left_distance < right_distance else "right"
+        wrist, shoulder = ("lw", "ls") if side == "left" else ("rw", "rs")
+        if xy[wrist][1] > xy[shoulder][1]:
+            continue  # do not label a dribble or low pass as a release
         candidates.append(
             {
                 "frame": ball_frame,
@@ -520,7 +614,11 @@ def _release_event(
         next_index = int(index) + 1
         before = candidates[int(index)]
         after = candidates[next_index]
-        upward = float(after["ball_y"]) <= float(before["ball_y"]) + 12
+        if not (0 < int(after["frame"]) - int(before["frame"]) <= max(3, int(fps * 0.12))):
+            continue
+        if before["side"] != after["side"]:
+            continue
+        upward = float(after["ball_y"]) < float(before["ball_y"])
         if float(before["distance"]) <= 1.4 and separation[int(index)] >= 0.18 and upward:
             confidence = float(
                 np.clip(
@@ -535,6 +633,8 @@ def _release_event(
                 confidence=confidence,
                 shooting_side=str(after["side"]),
                 wrist_ball_distance_norm=float(after["distance"]),
+                interval_start_frame=int(before["frame"]),
+                interval_end_frame=int(after["frame"]),
             )
     return None
 
@@ -559,54 +659,44 @@ def _release_metrics(
     if abs(int(release_pose["index"]) - release.frame) > DETECTION_STRIDE:
         return (None,) * 7
     xy = release_pose["xy"]  # type: ignore[assignment]
+    visibility = release_pose["visibility_by_name"]
     side = release.shooting_side
-    shoulder, elbow, wrist, finger = (
+    shoulder, elbow, wrist, _finger = (
         ("ls", "le", "lw", "li") if side == "left" else ("rs", "re", "rw", "ri")
     )
     hip, knee, ankle = ("lh", "lk", "la") if side == "left" else ("rh", "rk", "ra")
-    elbow_angle = angle_deg(xy[shoulder], xy[elbow], xy[wrist])
-    knee_angle = angle_deg(xy[hip], xy[knee], xy[ankle])
-    wrist_angle = angle_deg(xy[elbow], xy[wrist], xy[finger])
-    ankle_y = max(float(xy["la"][1]), float(xy["ra"][1]))
-    shoulder_mid = (xy["ls"] + xy["rs"]) / 2
-    hip_mid = (xy["lh"] + xy["rh"]) / 2
-    body_height = max(
-        ankle_y - float(shoulder_mid[1]) + float(np.linalg.norm(shoulder_mid - hip_mid)), 1.0
+    elbow_angle = (
+        angle_deg(xy[shoulder], xy[elbow], xy[wrist])
+        if min(visibility[k] for k in (shoulder, elbow, wrist)) >= 0.6
+        else None
     )
-    release_height = (ankle_y - float(xy[wrist][1])) / body_height
-
-    event_poses = valid
-    if event_window:
-        event_poses = [
-            pose
-            for pose in valid
-            if event_window.start_frame <= int(pose["index"]) <= event_window.end_frame
-        ]
-    hip_y = [
-        float((pose["xy"]["lh"][1] + pose["xy"]["rh"][1]) / 2)  # type: ignore[index]
-        for pose in event_poses
-    ]
-    jump_height = (float(np.percentile(hip_y, 80)) - min(hip_y)) / body_height if hip_y else None
-
-    start_pose = min(
-        valid, key=lambda item: abs(int(item["index"]) - max(0, release.frame - int(fps * 0.5)))
+    knee_angle = (
+        angle_deg(xy[hip], xy[knee], xy[ankle])
+        if min(visibility[k] for k in (hip, knee, ankle)) >= 0.6
+        else None
     )
-    landing_pose = min(
-        valid, key=lambda item: abs(int(item["index"]) - (release.frame + int(fps * 0.7)))
-    )
-    start_hip = (start_pose["xy"]["lh"] + start_pose["xy"]["rh"]) / 2  # type: ignore[index]
-    landing_hip = (landing_pose["xy"]["lh"] + landing_pose["xy"]["rh"]) / 2  # type: ignore[index]
-    shoulder_width = max(float(np.linalg.norm(xy["ls"] - xy["rs"])), 1.0)
-    landing_drift = float(np.linalg.norm(landing_hip - start_hip)) / shoulder_width
+    wrist_angle = None  # hand landmarks are not validated for wrist-snap measurement
     hold_frames = 0
+    if max(int(p["index"]) for p in valid) < release.frame + fps * 0.3:
+        return elbow_angle, knee_angle, None, None, None, None, None
+    last_frame = release.frame - 1
     for pose in sorted(valid, key=lambda item: int(item["index"])):
         frame_index = int(pose["index"])
         if frame_index < release.frame or frame_index > release.frame + int(fps * 1.2):
             continue
         points = pose["xy"]  # type: ignore[assignment]
+        if frame_index - last_frame > 1:
+            return elbow_angle, knee_angle, None, None, None, None, None
+        last_frame = frame_index
+        if min(pose["visibility_by_name"][k] for k in (shoulder, elbow, wrist)) < 0.6:
+            return elbow_angle, knee_angle, None, None, None, None, None
         arm_angle = angle_deg(points[shoulder], points[elbow], points[wrist])
         if arm_angle is not None and arm_angle >= 145 and points[wrist][1] < points[elbow][1]:
             hold_frames += 1
+        else:
+            break
+    # Hip displacement is not jump height; pose alone is not landing ground truth.
+    release_height = jump_height = landing_drift = None
     return (
         elbow_angle,
         knee_angle,
@@ -624,45 +714,25 @@ def _coaching_feedback(
     release: ReleaseEvent | None,
     quality_warnings: list[str],
 ) -> CoachingFeedback:
-    if status != "ok":
+    if status != "ok" or quality_warnings or release is None or release.confidence < 0.65:
         return CoachingFeedback(
             available=False,
             focus="איכות הצילום",
             observation="אין מספיק פריימים אמינים כדי לתת עצת קליעה.",
             cue="מקם את הטלפון כך שכל הגוף, הכדור והסל יישארו בפריים.",
             drill="צלם סט חדש של 10 זריקות ממצלמה יציבה וב־60 FPS.",
-            confidence=0.98,
+            confidence=0.0,
             evidence=quality_warnings or ["כיסוי Pose נמוך מסף האמינות"],
         )
-    if metrics.pose_consistency is not None and metrics.pose_consistency < 0.55:
+    if metrics.trunk_lean_range_deg is not None and metrics.trunk_lean_range_deg > 18:
         return CoachingFeedback(
             available=True,
             focus="יציבות הגוף",
-            observation="נטיית הגוף השתנתה בצורה משמעותית לאורך התנועה.",
-            cue="סיים גבוה ונחת באותו קו שבו התחלת.",
-            drill="10 זריקות form shooting עם עצירה של שתי שניות בנחיתה.",
-            confidence=0.72,
-            evidence=[f"מדד עקביות גוף: {metrics.pose_consistency:.0%}"],
-        )
-    if metrics.min_knee_angle_deg is not None and metrics.min_knee_angle_deg > 150:
-        return CoachingFeedback(
-            available=True,
-            focus="שימוש ברגליים",
-            observation="כיפוף הברך היה קטן יחסית לאורך חלון הזריקה.",
-            cue="טען את הרגליים לפני שהכדור מתחיל לעלות.",
-            drill="3 סטים של 8 זריקות קרובות עם dip רגוע ומתוזמן.",
-            confidence=0.68,
-            evidence=[f"זווית ברך מינימלית: {metrics.min_knee_angle_deg:.1f}°"],
-        )
-    if release is None:
-        return CoachingFeedback(
-            available=True,
-            focus="עקביות השחרור",
-            observation="הגוף זוהה, אך הפרדת הכדור מהיד לא הייתה ברורה מספיק.",
-            cue="שמור את הכדור גלוי למצלמה וסיים עם יד גבוהה.",
-            drill="10 זריקות קרובות מזווית צד־אלכסון.",
-            confidence=0.55,
-            evidence=["לא נמצא release שעבר את סף הביטחון"],
+            observation="נמדד שינוי בנטיית הגו בהיטל התמונה. מאמן צריך לבדוק אם הוא רצוי.",
+            cue="לבדיקת המאמן: האם השחקן מסיים את התנועה בשליטה?",
+            drill="אם המאמן מאשר: 5 זריקות קרובות באותו קצב, ואז השוואת הסרטונים.",
+            confidence=0.0,
+            evidence=[f"טווח נטיית גו דו־ממדית: {metrics.trunk_lean_range_deg:.0f}°"],
         )
     if (
         metrics.follow_through_hold_seconds is not None
@@ -671,20 +741,20 @@ def _coaching_feedback(
         return CoachingFeedback(
             available=True,
             focus="Follow-through",
-            observation="היד ירדה מהר לאחר רגע השחרור המשוער.",
-            cue="השאר את האצבעות בתוך הסל עד שהכדור מגיע לטבעת.",
-            drill="10 זריקות עם החזקת follow-through לשתי שניות.",
-            confidence=min(0.8, release.confidence),
+            observation="חלון היד הגבוהה אחרי השחרור המשוער היה קצר. יש לבדוק בקליפ.",
+            cue="לבדיקת המאמן: נסו לסיים עם יד גבוהה ונינוחה, ללא נעילה בכוח.",
+            drill="רק באישור המאמן: 5 זריקות קרובות עם אותו דגש ובדיקה חוזרת.",
+            confidence=0.0,
             evidence=[f"החזקה לאחר שחרור: {metrics.follow_through_hold_seconds:.2f} שניות"],
         )
     return CoachingFeedback(
-        available=True,
-        focus="שימור המכניקה",
-        observation="לא נמצא כרגע דפוס אחד שחורג באופן ברור מספי המנוע.",
-        cue="שמור על אותו קצב ושחרור לאורך הסט הבא.",
-        drill="סט של 10 זריקות מאותה נקודה ומדידת עקביות.",
-        confidence=0.6,
-        evidence=[f"release confidence: {release.confidence:.0%}"],
+        available=False,
+        focus="סקירת המאמן",
+        observation="אין כרגע מספיק ראיות לדגש אישי אוטומטי. זה לא אישור שהטכניקה מושלמת.",
+        cue="בחרו יחד עם המאמן דגש אחד לסט הבא.",
+        drill="צלמו 5 זריקות נוספות מאותה נקודה, ללא שינוי בזווית הצילום.",
+        confidence=0.0,
+        evidence=[f"שחרור משוער בפריים {release.frame}; נדרש אימות"],
     )
 
 

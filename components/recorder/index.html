@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="he" dir="rtl"><meta charset="utf-8">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111b2a;color:#edf3ff;font:15px system-ui;padding:18px;border-radius:16px}
+button{border:1px solid #526179;border-radius:9px;padding:12px 17px;background:#243348;color:white;font:inherit;cursor:pointer;margin:4px}
+button:disabled{opacity:.4;cursor:default}#start{background:#f4783b;color:#101828;border:0;font-weight:700}
+.stage{position:relative;background:#080e17;border-radius:12px;overflow:hidden;height:260px;margin:12px 0}
+video,canvas{position:absolute;width:100%;height:100%;object-fit:contain}p{color:#bccade;line-height:1.6}#status{min-height:24px}a{color:#ffc795}
+</style>
+<b>צילום ישיר · עד שתי דקות · ללא הקלטת קול</b>
+<p>השלד החי הוא תצוגה מקדימה, לא ניתוח קליעה. טעינת המודל דורשת אינטרנט; הווידאו מעובד בדפדפן ונשלח רק לשרת Swisher המקומי.</p>
+<button id="camera">פתיחת מצלמה</button><button id="pose" disabled>הפעלת שלד חי</button>
+<button id="start" disabled>התחלת הקלטה</button><button id="stop" disabled>סיום והעברה לתיוג</button><button id="close" disabled>כיבוי מצלמה</button>
+<div class="stage"><video id="video" autoplay muted playsinline></video><canvas id="canvas"></canvas></div>
+<div id="status" role="status" aria-live="polite">המצלמה כבויה. נדרשת הרשאה מפורשת בדפדפן.</div><a id="download" hidden>שמירת עותק מקומי</a>
+<script type="module">
+const $=id=>document.getElementById(id), video=$('video'), canvas=$('canvas'), ctx=canvas.getContext('2d');
+const send=(type,more={})=>parent.postMessage({isStreamlitMessage:true,type,...more},'*');
+let stream, recorder, landmarker, chunks=[], timer, ticker, startAt, size=0, last=0, url, running=false;
+function status(s){$('status').textContent=s}
+function stopCamera(){stream?.getTracks().forEach(t=>t.stop());running=false;$('camera').disabled=false;$('start').disabled=true;$('close').disabled=true;$('pose').disabled=true;ctx.clearRect(0,0,canvas.width,canvas.height)}
+$('camera').onclick=async()=>{try{
+ if(!navigator.mediaDevices || !window.MediaRecorder)throw Error('הצילום דורש דפדפן תומך ב־localhost או HTTPS. אפשר להעלות סרטון במקום.');
+ stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:60},facingMode:'environment'},audio:false});
+ video.srcObject=stream;await video.play();running=true;$('camera').disabled=true;$('start').disabled=false;$('close').disabled=false;$('pose').disabled=false;
+ const s=stream.getVideoTracks()[0].getSettings();status(`המצלמה מוכנה · ${s.width}×${s.height} · ${Math.round(s.frameRate||0)} FPS. הגוף כולו צריך להיות בפריים.`);loop();
+}catch(e){status('לא ניתן לפתוח מצלמה: '+e.message)}};
+$('pose').onclick=async()=>{ $('pose').disabled=true; status('טוען מודל שלד חי…');try{
+ const {FilesetResolver,PoseLandmarker}=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/vision_bundle.mjs');
+ const files=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm');
+ landmarker=await PoseLandmarker.createFromOptions(files,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'},runningMode:'VIDEO',numPoses:1,minPoseDetectionConfidence:.6,minPosePresenceConfidence:.6});
+ status('שלד חי פעיל לשחקן אחד · נקודות מוסתרות אינן מוצגות.');
+}catch(e){status('שלד חי לא זמין כרגע. הצילום עדיין אפשרי. '+e.message);$('pose').disabled=false}};
+const edges=[[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
+function loop(){if(!running)return;const now=performance.now();if(landmarker&&video.readyState>=2&&now-last>150){last=now;try{
+ canvas.width=video.videoWidth;canvas.height=video.videoHeight;ctx.clearRect(0,0,canvas.width,canvas.height);
+ const poses=landmarker.detectForVideo(video,now).landmarks;ctx.strokeStyle='#63efd0';ctx.lineWidth=4;
+ for(const points of poses) for(const [a,b] of edges){if(Math.min(points[a].visibility,points[b].visibility)<.6)continue;ctx.beginPath();ctx.moveTo(points[a].x*canvas.width,points[a].y*canvas.height);ctx.lineTo(points[b].x*canvas.width,points[b].y*canvas.height);ctx.stroke()}
+}catch(e){landmarker.close();landmarker=null;status('תצוגת שלד נעצרה; ההקלטה ממשיכה.')}}requestAnimationFrame(loop)}
+$('start').onclick=()=>{try{
+ chunks=[];size=0; const mime=['video/mp4','video/webm;codecs=vp8','video/webm'].find(t=>MediaRecorder.isTypeSupported(t));
+ recorder=new MediaRecorder(stream,mime?{mimeType:mime}:{});
+ recorder.ondataavailable=e=>{if(e.data.size){chunks.push(e.data);size+=e.data.size;if(size>140*1024*1024&&recorder.state==='recording')recorder.stop()}};
+ recorder.onerror=e=>{status('ההקלטה נכשלה. העלה סרטון קיים.');clearTimeout(timer);clearInterval(ticker);stopCamera()};
+ recorder.onstop=()=>{clearTimeout(timer);clearInterval(ticker);$('stop').disabled=true;stopCamera();
+ const blob=new Blob(chunks,{type:recorder.mimeType});if(!blob.size){status('לא נשמרו פריימים. נסה לצלם שוב.');return}
+ if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(blob);$('download').href=url;$('download').download='swisher_capture.'+(blob.type.includes('mp4')?'mp4':'webm');$('download').hidden=false;
+ const reader=new FileReader();reader.onload=()=>{send('streamlit:setComponentValue',{value:{id:crypto.randomUUID(),name:$('download').download,data:reader.result.split(',')[1]},dataType:'json'});status('ההקלטה הועברה. לחץ על שמירת סשן מתחת לצילום.');};reader.readAsDataURL(blob);
+ };
+ recorder.start(1000);startAt=Date.now();$('start').disabled=true;$('close').disabled=true;$('stop').disabled=false;
+ ticker=setInterval(()=>status('מקליט · '+Math.floor((Date.now()-startAt)/1000)+' שניות מתוך 120'),500);
+ timer=setTimeout(()=>{if(recorder.state==='recording')recorder.stop()},120000);
+}catch(e){status('הקלטה אינה זמינה: '+e.message)}};
+$('stop').onclick=()=>{if(recorder?.state==='recording')recorder.stop()};
+$('close').onclick=()=>{stopCamera();status('המצלמה כבויה.')};
+window.addEventListener('pagehide',()=>{clearTimeout(timer);clearInterval(ticker);stopCamera();landmarker?.close()});
+send('streamlit:componentReady',{apiVersion:1});send('streamlit:setFrameHeight',{height:535});
+</script></html>

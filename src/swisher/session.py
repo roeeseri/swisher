@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import shutil
+import tempfile
 from datetime import UTC, datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+import av
 import cv2
 from pydantic import BaseModel, Field, model_validator
 
@@ -50,7 +54,7 @@ class ShotAnnotation(BaseModel):
     annotation_id: str = Field(default_factory=lambda: str(uuid4()))
     shot_id: str
     shot_start: int = Field(ge=0)
-    release_frame: int = Field(ge=0)
+    release_frame: int | None = Field(default=None, ge=0)
     rim_interaction: int | None = Field(default=None, ge=0)
     shot_end: int = Field(ge=0)
     outcome: Literal["made", "missed", "unknown"] = "unknown"
@@ -60,11 +64,15 @@ class ShotAnnotation(BaseModel):
     drill: str = ""
     confidence: int = Field(default=3, ge=1, le=5)
     annotation_version: int = Field(default=1, ge=1)
+    origin: Literal["manual", "auto_reviewed"] = "manual"
+    coach_approved: bool = False
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     @model_validator(mode="after")
     def validate_timeline(self) -> ShotAnnotation:
-        events = [self.shot_start, self.release_frame]
+        events = [self.shot_start]
+        if self.release_frame is not None:
+            events.append(self.release_frame)
         if self.rim_interaction is not None:
             events.append(self.rim_interaction)
         events.append(self.shot_end)
@@ -81,6 +89,14 @@ class SessionStore:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
+
+    def directory(self, session_id: str) -> Path:
+        if not IDENTIFIER_PATTERN.fullmatch(session_id):
+            raise ValueError("invalid session identifier")
+        path = self.root / session_id
+        if path.is_symlink():
+            raise ValueError("symlink sessions are not supported")
+        return path
 
     def list_sessions(self) -> list[str]:
         return sorted(
@@ -101,21 +117,27 @@ class SessionStore:
         video_name: str,
         video_bytes: bytes,
     ) -> SessionMetadata:
-        if not IDENTIFIER_PATTERN.fullmatch(session_id):
-            raise ValueError("session_id contains unsupported characters")
-        directory = self.root / session_id
-        manifest_path = directory / "session.json"
-        if manifest_path.exists():
+        for identifier in (session_id, player_id, coach_id):
+            if not IDENTIFIER_PATTERN.fullmatch(identifier):
+                raise ValueError("מזהים: 3–64 אותיות באנגלית, מספרים, קו תחתון או מקף")
+        if not consent_confirmed:
+            raise ValueError("נדרשת הסכמה לפני שמירת הסרטון")
+        if not video_bytes or len(video_bytes) > 200 * 1024 * 1024:
+            raise ValueError("יש להעלות קובץ בגודל עד 200MB")
+        directory = self.directory(session_id)
+        if directory.exists():
             raise FileExistsError(f"session already exists: {session_id}")
-        directory.mkdir(parents=True)
+        staging = Path(tempfile.mkdtemp(prefix=".upload_", dir=self.root))
         safe_suffix = Path(video_name).suffix.lower()
-        if safe_suffix not in {".mp4", ".mov", ".m4v", ".avi"}:
+        if safe_suffix not in {".mp4", ".mov", ".m4v", ".avi", ".webm"}:
             safe_suffix = ".mp4"
-        video_path = directory / f"source{safe_suffix}"
-        temporary = video_path.with_suffix(video_path.suffix + ".part")
-        temporary.write_bytes(video_bytes)
-        temporary.replace(video_path)
+        video_path = staging / f"source{safe_suffix}"
         try:
+            video_path.write_bytes(video_bytes)
+            if safe_suffix == ".webm":
+                converted = staging / "indexed.mp4"
+                normalize_browser_video(video_path, converted)
+                video_path = converted
             facts = inspect_video(video_path)
             metadata = SessionMetadata(
                 session_id=session_id,
@@ -127,24 +149,29 @@ class SessionStore:
                 video_filename=video_path.name,
                 **facts,
             )
-            self._atomic_json(manifest_path, metadata.model_dump(mode="json"))
-            (directory / "artifacts").mkdir()
+            self._atomic_json(staging / "session.json", metadata.model_dump(mode="json"))
+            (staging / "artifacts").mkdir()
+            if directory.exists():
+                raise FileExistsError("session already exists")
+            staging.rename(directory)
             return metadata
         except Exception:
-            shutil.rmtree(directory)
+            shutil.rmtree(staging)
             raise
 
     def load(self, session_id: str) -> SessionMetadata:
         return SessionMetadata.model_validate_json(
-            (self.root / session_id / "session.json").read_text(encoding="utf-8")
+            (self.directory(session_id) / "session.json").read_text(encoding="utf-8")
         )
 
     def video_path(self, session_id: str) -> Path:
         metadata = self.load(session_id)
-        return self.root / session_id / metadata.video_filename
+        if Path(metadata.video_filename).name != metadata.video_filename:
+            raise ValueError("invalid video filename")
+        return self.directory(session_id) / metadata.video_filename
 
     def annotations(self, session_id: str) -> list[ShotAnnotation]:
-        path = self.root / session_id / "annotations.json"
+        path = self.directory(session_id) / "annotations.json"
         if not path.exists():
             return []
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -157,6 +184,12 @@ class SessionStore:
         annotations = self.annotations(session_id)
         for index, existing in enumerate(annotations):
             if existing.shot_id == annotation.shot_id:
+                self._atomic_json(
+                    self.directory(session_id)
+                    / "history"
+                    / f"{existing.shot_id}_v{existing.annotation_version}_{uuid4().hex}.json",
+                    existing.model_dump(mode="json"),
+                )
                 annotation = annotation.model_copy(
                     update={
                         "annotation_id": existing.annotation_id,
@@ -170,19 +203,21 @@ class SessionStore:
             annotations.append(annotation)
         annotations.sort(key=lambda item: item.shot_start)
         self._atomic_json(
-            self.root / session_id / "annotations.json",
+            self.directory(session_id) / "annotations.json",
             [item.model_dump(mode="json") for item in annotations],
         )
 
     def artifact_directory(self, session_id: str, shot_id: str) -> Path:
-        path = self.root / session_id / "artifacts" / shot_id
+        if not IDENTIFIER_PATTERN.fullmatch(shot_id):
+            raise ValueError("invalid shot identifier")
+        path = self.directory(session_id) / "artifacts" / shot_id
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     @staticmethod
     def _atomic_json(path: Path, payload: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary = path.with_suffix(f".{uuid4().hex}.tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(path)
 
@@ -196,7 +231,7 @@ def inspect_video(path: Path) -> dict[str, int | float]:
         frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if fps <= 0 or frame_count <= 0 or width <= 0 or height <= 0:
+        if not math.isfinite(fps) or fps <= 0 or frame_count <= 0 or width <= 0 or height <= 0:
             raise ValueError("video metadata is invalid")
         return {
             "fps": fps,
@@ -206,6 +241,38 @@ def inspect_video(path: Path) -> dict[str, int | float]:
         }
     finally:
         capture.release()
+
+
+def normalize_browser_video(source: Path, destination: Path) -> None:
+    """Finalize MediaRecorder WebM into indexed H.264; retain the original WebM.
+
+    Source presentation times are retained, not reconstructed as frame/fps.
+    """
+    with av.open(str(source)) as incoming, av.open(str(destination), "w") as outgoing:
+        stream = incoming.streams.video[0]
+        output = outgoing.add_stream("libx264", rate=stream.average_rate or 30)
+        output.width, output.height = stream.width, stream.height
+        output.pix_fmt = "yuv420p"
+        output.time_base = Fraction(1, 90000)
+        output.options = {"preset": "fast", "crf": "20"}
+        first = None
+        count = 0
+        for frame in incoming.decode(stream):
+            if frame.time is None:
+                raise ValueError("recording timestamps are missing")
+            if first is None:
+                first = frame.time
+            if frame.time - first > 125:
+                raise ValueError("recording exceeds two minutes")
+            frame.pts = round((frame.time - first) * 90000)
+            frame.time_base = output.time_base
+            for packet in output.encode(frame):
+                outgoing.mux(packet)
+            count += 1
+        if count < 2:
+            raise ValueError("recording contains fewer than two frames")
+        for packet in output.encode():
+            outgoing.mux(packet)
 
 
 def read_frame(path: Path, frame_number: int) -> object:
@@ -223,6 +290,11 @@ def read_frame(path: Path, frame_number: int) -> object:
 
 
 def extract_clip(source: Path, destination: Path, start_frame: int, end_frame: int) -> None:
+    if source.resolve() == destination.resolve():
+        raise ValueError("source video must not be overwritten")
+    facts = inspect_video(source)
+    if start_frame < 0 or end_frame >= facts["frame_count"]:
+        raise ValueError("clip range is outside source video")
     if end_frame <= start_frame:
         raise ValueError("clip end must follow clip start")
     capture = cv2.VideoCapture(str(source))
@@ -243,7 +315,7 @@ def extract_clip(source: Path, destination: Path, start_frame: int, end_frame: i
         for _ in range(start_frame, end_frame + 1):
             ok, frame = capture.read()
             if not ok:
-                break
+                raise ValueError("source video ended before the requested frame")
             writer.write(frame)
     finally:
         capture.release()

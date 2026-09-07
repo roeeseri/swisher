@@ -7,6 +7,7 @@ def _pose(frame: int) -> dict[str, object]:
     return {
         "index": frame,
         "valid": True,
+        "visibility_by_name": {k: 0.95 for k in ("ls", "rs", "lw", "rw")},
         "xy": {
             "ls": np.array([80.0, 100.0]),
             "rs": np.array([120.0, 100.0]),
