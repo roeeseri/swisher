@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from swisher import pose_backend
+from swisher.camera_tracking import CameraRegionTracker
 from swisher.contracts import (
     AnalysisResult,
     CoachingFeedback,
@@ -24,7 +25,13 @@ from swisher.contracts import (
     ShotOutcome,
     VideoMetadata,
 )
-from swisher.detection import RfDetrDetector, padded_crop, select_primary_player, smooth_box
+from swisher.detection import (
+    RfDetrDetector,
+    detect_region_balls,
+    padded_crop,
+    select_primary_player,
+    smooth_box,
+)
 from swisher.geometry import angle_deg, trunk_lean_deg
 from swisher.proposals import propose_shots
 from swisher.rim import GroundingDinoRimDetector, RimDetection
@@ -41,8 +48,12 @@ def analyze_video(
     on_progress: ProgressCallback | None = None,
     *,
     player_region: tuple[int, int, int, int] | None = None,
+    player_selection_region: tuple[int, int, int, int] | None = None,
     thorough: bool = False,
     search_rim: bool = False,
+    max_duration_seconds: float = 120,
+    track_camera_motion: bool = True,
+    refine_ball_detection: bool = True,
     trace_path: Path | None = None,
 ) -> AnalysisResult:
     if input_path.resolve() == output_path.resolve():
@@ -59,9 +70,12 @@ def analyze_video(
     if width < 320 or height < 240 or fps <= 0 or frame_count <= 0:
         capture.release()
         raise ValueError("מטא־דאטה של הסרטון אינו תקין או שהרזולוציה נמוכה מדי")
-    if frame_count > int(fps * 120):
+    if not 0 < max_duration_seconds <= 600:
         capture.release()
-        raise ValueError("בגרסת האב־טיפוס ניתן לנתח סרטונים באורך של עד שתי דקות")
+        raise ValueError("duration limit must be between 0 and 600 seconds")
+    if frame_count > int(fps * max_duration_seconds):
+        capture.release()
+        raise ValueError(f"הסרטון חורג ממגבלת הניתוח של {max_duration_seconds:g} שניות")
 
     metadata = VideoMetadata(
         width=width,
@@ -71,8 +85,10 @@ def analyze_video(
         duration_seconds=frame_count / fps,
     )
 
-    if player_region is not None:
-        x1, y1, x2, y2 = player_region
+    for region in (player_region, player_selection_region):
+        if region is None:
+            continue
+        x1, y1, x2, y2 = region
         if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
             capture.release()
             raise ValueError("אזור השחקן חורג מגבולות התמונה")
@@ -91,6 +107,7 @@ def analyze_video(
     player_detected_frames = 0
     ball_detected_frames = 0
     ball_observations: list[dict[str, object]] = []
+    detection_trace: list[dict[str, object]] = []
     brightness_samples: list[float] = []
     blur_samples: list[float] = []
     rim_detection: RimDetection | None = None
@@ -98,6 +115,10 @@ def analyze_video(
     stride = 1 if thorough else DETECTION_STRIDE
     eligible = False
     ambiguous_frames = 0
+    camera_tracker = None
+    active_region = player_region
+    active_selection = player_selection_region or player_region
+    camera_motion_failures = 0
 
     with (
         _release_resources(capture, writer),
@@ -127,15 +148,37 @@ def analyze_video(
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 brightness_samples.append(float(np.mean(gray)))
                 blur_samples.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
+                camera_ok = True
+                if track_camera_motion and player_region:
+                    if camera_tracker is None:
+                        camera_tracker = CameraRegionTracker(frame, player_region)
+                    else:
+                        camera_tracker.update(frame)
+                    active_region = camera_tracker.region(player_region)
+                    active_selection = camera_tracker.region(
+                        player_selection_region or player_region
+                    )
+                    camera_ok = active_region is not None and active_selection is not None
+                    camera_motion_failures += int(not camera_ok)
                 latest_detections = detector.detect(rgb, threshold=0.18)
+                detection_trace.append(
+                    {
+                        "frame": index,
+                        "detections": [
+                            {"class_name": d.class_name, "confidence": d.confidence, "xyxy": d.xyxy}
+                            for d in latest_detections
+                        ],
+                    }
+                )
                 sampled_frames += 1
                 people = [d for d in latest_detections if d.class_name == "person"]
-                if player_region:
-                    rx1, ry1, rx2, ry2 = player_region
+                selection_region = active_selection
+                if selection_region:
+                    rx1, ry1, rx2, ry2 = selection_region
                     people = [
                         d for d in people if rx1 <= d.center[0] <= rx2 and ry1 <= d.center[1] <= ry2
                     ]
-                eligible = len(people) == 1
+                eligible = camera_ok and len(people) == 1
                 ambiguous_frames += int(len(people) > 1)
                 primary = (
                     select_primary_player(people, frame.shape, tracked_box) if eligible else None
@@ -145,32 +188,58 @@ def analyze_video(
                     tracked_box = smooth_box(tracked_box, primary.xyxy)
                 else:
                     tracked_box = None
-                balls = [d for d in latest_detections if d.class_name == "sports_ball"]
-                if eligible and len(balls) == 1:
-                    ball_detected_frames += 1
-                    best_ball = max(
-                        balls,
-                        key=lambda item: item.confidence,
-                    )
-                    ball_observations.append(
-                        {
-                            "frame": index,
-                            "center": np.array(best_ball.center, dtype=np.float64),
-                            "confidence": best_ball.confidence,
-                        }
-                    )
 
             crop_box = (0, 0, width, height)
             if tracked_box is not None:
                 crop_box = padded_crop(tracked_box, width, height)
-            if player_region is not None:
-                crop_box = player_region
+            if active_region is not None:
+                crop_box = active_region
             x1, y1, x2, y2 = crop_box
             crop = rgb[y1:y2, x1:x2]
             prediction = pose.process(crop) if crop.size and eligible else None
             landmarks = prediction.pose_landmarks if prediction is not None else None
             record = _extract_record(landmarks, crop_box, index)
+            record["player_region"] = active_region
+            record["camera_tracking_valid"] = active_region is not None if player_region else True
             record["timestamp_ms"] = float(capture.get(cv2.CAP_PROP_POS_MSEC))
+            if eligible:
+                balls = (
+                    [d for d in latest_detections if d.class_name == "sports_ball"]
+                    if index % stride == 0
+                    else []
+                )
+                if refine_ball_detection and record.get("valid") and _needs_ball_detail(record):
+                    details = detect_region_balls(detector, rgb, crop_box)
+                    detection_trace.append(
+                        {
+                            "frame": index,
+                            "detail_only": True,
+                            "region_balls": [
+                                {
+                                    "class_name": d.class_name,
+                                    "confidence": d.confidence,
+                                    "xyxy": d.xyxy,
+                                }
+                                for d in details
+                            ],
+                        }
+                    )
+                    for ball in details:
+                        if not any(
+                            np.linalg.norm(np.array(ball.center) - np.array(old.center)) < 12
+                            for old in balls
+                        ):
+                            balls.append(ball)
+                if balls and index % stride == 0:
+                    ball_detected_frames += 1
+                for ball in balls:
+                    ball_observations.append(
+                        {
+                            "frame": index,
+                            "center": np.array(ball.center, dtype=np.float64),
+                            "confidence": ball.confidence,
+                        }
+                    )
             frames.append(record)
 
             if landmarks:
@@ -194,6 +263,14 @@ def analyze_video(
             for record in frames:
                 handle.write(json.dumps(record, default=lambda v: v.tolist()) + "\n")
 
+    if trace_path:
+        trace_path.with_name("detections.json").write_text(
+            json.dumps(detection_trace), encoding="utf-8"
+        )
+        trace_path.with_name("balls.json").write_text(
+            json.dumps(ball_observations, default=lambda v: v.tolist()), encoding="utf-8"
+        )
+
     valid = [frame for frame in frames if bool(frame["valid"])]
     pose_confidence = len(valid) / len(frames)
     event_window = _event_window(valid, fps)
@@ -204,6 +281,8 @@ def analyze_video(
     mean_brightness = float(np.mean(brightness_samples)) if brightness_samples else 0.0
     mean_blur_score = float(np.mean(blur_samples)) if blur_samples else 0.0
     quality_warnings = _quality_warnings(metadata, mean_brightness, mean_blur_score)
+    if camera_motion_failures:
+        quality_warnings.append("לא ניתן היה לאמת תנועת מצלמה בחלק מהפריימים; הניתוח נמנע בהם")
     if ambiguous_frames:
         quality_warnings.append("נראו כמה שחקנים באזור הניתוח; הפריימים האלה לא נותחו")
     status = (
@@ -258,7 +337,11 @@ def analyze_video(
         ],
         candidates=candidates,
         provenance={
-            "pipeline": "swisher_0.3",
+            "pipeline": "swisher_0.4_experimental",
+            "track_camera_motion": track_camera_motion,
+            "refine_ball_detection": refine_ball_detection,
+            "ball_refinement_stride": 1,
+            "camera_motion_failures": camera_motion_failures,
             "pose_model": "mediapipe_blazepose_heavy",
             "pose_api": "Tasks PoseLandmarker IMAGE",
             "pose_asset_sha256": _file_hash(pose.path),
@@ -266,7 +349,9 @@ def analyze_video(
             "rfdetr_version": version("rfdetr"),
             "detector": detector.name,
             "detection_stride": stride,
+            "max_duration_seconds": max_duration_seconds,
             "player_region": player_region,
+            "player_selection_region": player_selection_region,
             "processed_frames": len(frames),
             "elapsed_seconds": round(time.monotonic() - started, 2),
             "source_sha256": _file_hash(input_path),
@@ -275,6 +360,17 @@ def analyze_video(
             "timing": "frame/fps estimates; decoder timestamps saved in trace",
         },
     )
+
+
+def _needs_ball_detail(record):
+    xy = record["xy"]
+    visibility = record["visibility_by_name"]
+    for shoulder, wrist, hip in [("ls", "lw", "lh"), ("rs", "rw", "rh")]:
+        if min(visibility.get(shoulder, 0), visibility.get(wrist, 0)) >= 0.5:
+            torso = max(float(np.linalg.norm(xy[shoulder] - xy[hip])), 1)
+            if xy[wrist][1] < xy[shoulder][1] + torso * 0.35:
+                return True
+    return False
 
 
 def _file_hash(path: Path) -> str:
@@ -566,77 +662,10 @@ def _metrics(
     )
 
 
-def _release_event(
-    valid: list[dict[str, object]], ball_observations: list[dict[str, object]], fps: float
-) -> ReleaseEvent | None:
-    if len(ball_observations) < 3 or len(valid) < 3:
-        return None
-    pose_by_frame = {int(item["index"]): item for item in valid}
-    candidates: list[dict[str, object]] = []
-    for ball in ball_observations:
-        ball_frame = int(ball["frame"])
-        nearby_frames = [
-            frame for frame in pose_by_frame if abs(frame - ball_frame) <= DETECTION_STRIDE
-        ]
-        if not nearby_frames:
-            continue
-        pose_frame = min(nearby_frames, key=lambda frame: abs(frame - ball_frame))
-        pose = pose_by_frame[pose_frame]
-        xy = pose["xy"]  # type: ignore[assignment]
-        visibility = pose.get("visibility_by_name", {})
-        if min(visibility.get(k, 0) for k in ("ls", "rs", "lw", "rw")) < 0.5:
-            continue
-        shoulder_width = float(np.linalg.norm(xy["ls"] - xy["rs"]))
-        if shoulder_width < 12:
-            continue
-        ball_center = ball["center"]  # type: ignore[assignment]
-        left_distance = float(np.linalg.norm(ball_center - xy["lw"])) / shoulder_width
-        right_distance = float(np.linalg.norm(ball_center - xy["rw"])) / shoulder_width
-        side = "left" if left_distance < right_distance else "right"
-        wrist, shoulder = ("lw", "ls") if side == "left" else ("rw", "rs")
-        if xy[wrist][1] > xy[shoulder][1]:
-            continue  # do not label a dribble or low pass as a release
-        candidates.append(
-            {
-                "frame": ball_frame,
-                "distance": min(left_distance, right_distance),
-                "side": "left" if left_distance < right_distance else "right",
-                "ball_y": float(ball_center[1]),
-                "confidence": float(ball["confidence"]),
-            }
-        )
-    if len(candidates) < 3:
-        return None
-    candidates.sort(key=lambda item: int(item["frame"]))
-    distances = np.array([float(item["distance"]) for item in candidates])
-    separation = np.diff(distances)
-    for index in np.argsort(separation)[::-1]:
-        next_index = int(index) + 1
-        before = candidates[int(index)]
-        after = candidates[next_index]
-        if not (0 < int(after["frame"]) - int(before["frame"]) <= max(3, int(fps * 0.12))):
-            continue
-        if before["side"] != after["side"]:
-            continue
-        upward = float(after["ball_y"]) < float(before["ball_y"])
-        if float(before["distance"]) <= 1.4 and separation[int(index)] >= 0.18 and upward:
-            confidence = float(
-                np.clip(
-                    0.35 + separation[int(index)] * 0.35 + float(after["confidence"]) * 0.35,
-                    0.0,
-                    0.95,
-                )
-            )
-            return ReleaseEvent(
-                frame=int(after["frame"]),
-                seconds=int(after["frame"]) / fps,
-                confidence=confidence,
-                shooting_side=str(after["side"]),
-                wrist_ball_distance_norm=float(after["distance"]),
-                interval_start_frame=int(before["frame"]),
-                interval_end_frame=int(after["frame"]),
-            )
-    return None
+def _release_event(valid, ball_observations, fps):
+    from swisher.release import detect_release
+
+    return detect_release(valid, ball_observations, fps)
 
 
 def _release_metrics(
@@ -653,7 +682,7 @@ def _release_metrics(
     float | None,
     float | None,
 ]:
-    if release is None or not valid:
+    if release is None or not valid or release.shooting_side not in {"left", "right"}:
         return (None,) * 7
     release_pose = min(valid, key=lambda item: abs(int(item["index"]) - release.frame))
     if abs(int(release_pose["index"]) - release.frame) > DETECTION_STRIDE:

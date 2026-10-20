@@ -25,7 +25,9 @@ def main():
         cap = cv2.VideoCapture(str(args.video))
         latencies, valid, count = [], 0, 0
         try:
-            with Pose(static_image_mode=True, model_complexity=complexity) as pose:
+            with Pose(
+                static_image_mode=True, model_complexity=complexity
+            ) as pose:
                 while count < args.frames:
                     ok, frame = cap.read()
                     if not ok:

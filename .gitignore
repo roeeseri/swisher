@@ -32,3 +32,7 @@ artifacts/
 datasets/
 data/
 sources/
+
+# Private review images and superseded document renders
+outputs/*/
+*.log

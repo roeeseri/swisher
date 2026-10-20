@@ -1,0 +1,540 @@
+{
+  "reference_status": "Provisional, assistant visual review guided by old proposals. Not exhaustive full-video labels and not coach approved. No population accuracy claim.",
+  "matching": "One-to-one overlap between predicted interval and visual reference interval. Predictions outside reviewed windows remain unverified.",
+  "results": [
+    {
+      "video": "IMG_1083",
+      "role": "development",
+      "baseline": {
+        "reference_shots": 10,
+        "matched_release_intervals": 0,
+        "missed_reference_releases": 10,
+        "predicted_releases": 0,
+        "false_releases_in_reviewed_negative_windows": [],
+        "unmatched_predictions_requiring_review": 0,
+        "events": [
+          {
+            "reference_interval": [
+              90,
+              93
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              347,
+              350
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              575,
+              578
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              795,
+              798
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1037,
+              1040
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1243,
+              1246
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1446,
+              1449
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1671,
+              1674
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1893,
+              1896
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              2139,
+              2142
+            ],
+            "matched": false
+          }
+        ]
+      },
+      "updated": {
+        "reference_shots": 10,
+        "matched_release_intervals": 7,
+        "missed_reference_releases": 3,
+        "predicted_releases": 7,
+        "false_releases_in_reviewed_negative_windows": [],
+        "unmatched_predictions_requiring_review": 0,
+        "events": [
+          {
+            "reference_interval": [
+              90,
+              93
+            ],
+            "predicted_frame": 92,
+            "predicted_interval": [
+              90,
+              92
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              347,
+              350
+            ],
+            "predicted_frame": 348,
+            "predicted_interval": [
+              347,
+              348
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              575,
+              578
+            ],
+            "predicted_frame": 577,
+            "predicted_interval": [
+              575,
+              577
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              795,
+              798
+            ],
+            "predicted_frame": 797,
+            "predicted_interval": [
+              795,
+              797
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              1037,
+              1040
+            ],
+            "predicted_frame": 1038,
+            "predicted_interval": [
+              1037,
+              1038
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              1243,
+              1246
+            ],
+            "predicted_frame": 1245,
+            "predicted_interval": [
+              1243,
+              1245
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              1446,
+              1449
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1671,
+              1674
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1893,
+              1896
+            ],
+            "predicted_frame": 1895,
+            "predicted_interval": [
+              1894,
+              1895
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              2139,
+              2142
+            ],
+            "matched": false
+          }
+        ]
+      }
+    },
+    {
+      "video": "IMG_1078",
+      "role": "holdout",
+      "baseline": {
+        "reference_shots": 9,
+        "matched_release_intervals": 0,
+        "missed_reference_releases": 9,
+        "predicted_releases": 0,
+        "false_releases_in_reviewed_negative_windows": [],
+        "unmatched_predictions_requiring_review": 0,
+        "events": [
+          {
+            "reference_interval": [
+              239,
+              242
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              523,
+              526
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              773,
+              776
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1117,
+              1120
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1376,
+              1379
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1650,
+              1656
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1878,
+              1881
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              2121,
+              2124
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              2362,
+              2365
+            ],
+            "matched": false
+          }
+        ]
+      },
+      "updated": {
+        "reference_shots": 9,
+        "matched_release_intervals": 2,
+        "missed_reference_releases": 7,
+        "predicted_releases": 2,
+        "false_releases_in_reviewed_negative_windows": [],
+        "unmatched_predictions_requiring_review": 0,
+        "events": [
+          {
+            "reference_interval": [
+              239,
+              242
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              523,
+              526
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              773,
+              776
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1117,
+              1120
+            ],
+            "predicted_frame": 1118,
+            "predicted_interval": [
+              1116,
+              1118
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              1376,
+              1379
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1650,
+              1656
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1878,
+              1881
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              2121,
+              2124
+            ],
+            "predicted_frame": 2123,
+            "predicted_interval": [
+              2122,
+              2123
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              2362,
+              2365
+            ],
+            "matched": false
+          }
+        ]
+      }
+    },
+    {
+      "video": "IMG_1068",
+      "role": "holdout",
+      "baseline": {
+        "reference_shots": 9,
+        "matched_release_intervals": 1,
+        "missed_reference_releases": 8,
+        "predicted_releases": 1,
+        "false_releases_in_reviewed_negative_windows": [],
+        "unmatched_predictions_requiring_review": 0,
+        "events": [
+          {
+            "reference_interval": [
+              190,
+              193
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              343,
+              346
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              632,
+              635
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              954,
+              957
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1279,
+              1282
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1479,
+              1482
+            ],
+            "predicted_frame": 1485,
+            "predicted_interval": [
+              1482,
+              1485
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              1687,
+              1690
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1953,
+              1956
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              2187,
+              2193
+            ],
+            "matched": false
+          }
+        ]
+      },
+      "updated": {
+        "reference_shots": 9,
+        "matched_release_intervals": 4,
+        "missed_reference_releases": 5,
+        "predicted_releases": 4,
+        "false_releases_in_reviewed_negative_windows": [],
+        "unmatched_predictions_requiring_review": 0,
+        "events": [
+          {
+            "reference_interval": [
+              190,
+              193
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              343,
+              346
+            ],
+            "predicted_frame": 346,
+            "predicted_interval": [
+              345,
+              346
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              632,
+              635
+            ],
+            "predicted_frame": 635,
+            "predicted_interval": [
+              634,
+              635
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              954,
+              957
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1279,
+              1282
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1479,
+              1482
+            ],
+            "predicted_frame": 1482,
+            "predicted_interval": [
+              1481,
+              1482
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              1687,
+              1690
+            ],
+            "matched": false
+          },
+          {
+            "reference_interval": [
+              1953,
+              1956
+            ],
+            "predicted_frame": 1956,
+            "predicted_interval": [
+              1954,
+              1956
+            ],
+            "matched": true
+          },
+          {
+            "reference_interval": [
+              2187,
+              2193
+            ],
+            "matched": false
+          }
+        ]
+      }
+    }
+  ]
+}

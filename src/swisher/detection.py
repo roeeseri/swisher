@@ -55,6 +55,23 @@ class RfDetrDetector:
         return detections
 
 
+def detect_region_balls(detector, rgb_frame, region, threshold=0.18):
+    """Re-run the existing detector at shooter scale and map boxes to source pixels."""
+    x1, y1, x2, y2 = region
+    crop = rgb_frame[y1:y2, x1:x2]
+    if not crop.size:
+        return []
+    return [
+        Detection(
+            d.class_name,
+            d.confidence,
+            (d.xyxy[0] + x1, d.xyxy[1] + y1, d.xyxy[2] + x1, d.xyxy[3] + y1),
+        )
+        for d in detector.detect(crop, threshold=threshold)
+        if d.class_name == "sports_ball"
+    ]
+
+
 def select_primary_player(
     detections: list[Detection],
     frame_shape: tuple[int, int, int],
