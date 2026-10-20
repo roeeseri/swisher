@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import math
 import threading
@@ -61,6 +63,79 @@ class StudioStore:
 
     def shot(self, identifier):
         return next((s for s in self.data["shots"] if s["id"] == identifier), None)
+
+    def import_feedback(self, payload):
+        """Merge registered offline reviews into the live store, preserving every coach/version."""
+        with self.lock:
+            if not isinstance(payload, dict) or not isinstance(payload.get("shots"), list):
+                raise TypeError("מבנה קובץ התיוגים לא תקין")
+            registry_path = self.root / "coach_packages.json"
+            registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+            package_id = payload.get("package_id")
+            if package_id not in registry:
+                raise ValueError("החבילה אינה רשומה במערכת הזו")
+            registration = registry[package_id]
+            current_jobs = {j["id"]: j for j in self.data["jobs"]}
+            for identifier, digest in registration["job_hashes"].items():
+                if (
+                    identifier not in current_jobs
+                    or current_jobs[identifier].get("source_sha256") != digest
+                ):
+                    raise ValueError("סרטוני המקור אינם תואמים לחבילה")
+            before = copy.deepcopy(self.data)
+            imported = skipped = 0
+            try:
+                for item in payload.get("shots", []):
+                    if not isinstance(item, dict) or not isinstance(item.get("reviews"), list):
+                        raise TypeError("רשומת תיוג לא תקינה")
+                    identifier = item.get("shot_id")
+                    shot = self.shot(identifier)
+                    if shot is None or identifier not in registration["candidates"]:
+                        raise ValueError("זריקה לא מוכרת בחבילת התיוג")
+                    digest = hashlib.sha256(
+                        json.dumps(shot["candidate"], sort_keys=True).encode()
+                    ).hexdigest()
+                    if (
+                        digest != registration["candidates"][identifier]
+                        or item.get("candidate") != shot["candidate"]
+                    ):
+                        raise ValueError("פרטי זריקת המקור השתנו")
+                    base = registration["base_versions"].get(identifier, 0)
+                    for row in item.get("reviews", []):
+                        if not isinstance(row, dict):
+                            raise TypeError("החלטת מאמן לא תקינה")
+                        if row.get("version", 0) <= base:
+                            continue
+                        external_id = (
+                            package_id
+                            + ":"
+                            + str(
+                                row.get("review_id")
+                                or hashlib.sha256(
+                                    json.dumps(row, sort_keys=True).encode()
+                                ).hexdigest()
+                            )
+                        )
+                        if any(r.get("external_review_id") == external_id for r in shot["reviews"]):
+                            skipped += 1
+                            continue
+                        self.review(identifier, {**row, "version": len(shot["reviews"])})
+                        shot["reviews"][-1].update(
+                            external_review_id=external_id,
+                            original_reviewed_at=row.get("created_at"),
+                            import_package=package_id,
+                        )
+                        imported += 1
+                        self.save()
+                self.save()
+            except Exception:
+                for original in before["shots"]:
+                    current = self.shot(original["id"])
+                    current.clear()
+                    current.update(original)
+                self.save()
+                raise
+            return {"imported_reviews": imported, "already_imported": skipped}
 
     def review(self, identifier, payload):
         with self.lock:

@@ -264,3 +264,74 @@ def test_tracking_drawing_does_not_invent_hidden_joints_or_balls():
     draw_tracking(image, pose, [{"center": [140, 140], "confidence": 0.8}])
     assert image[60, 60, 0] > 100  # visible skeletal edge
     assert image[140, 152, 1] > 150  # observed ball ring
+
+
+def register_coach_package(workspace):
+    import hashlib
+
+    shot = workspace.shot("test-shot")
+    job = workspace.data["jobs"][0]
+    job["source_sha256"] = "a" * 64
+    registration = {
+        "pack-test": {
+            "base_versions": {"test-shot": 0},
+            "job_hashes": {job["id"]: job["source_sha256"]},
+            "candidates": {
+                "test-shot": hashlib.sha256(
+                    json.dumps(shot["candidate"], sort_keys=True).encode()
+                ).hexdigest()
+            },
+        }
+    }
+    (workspace.root / "coach_packages.json").write_text(json.dumps(registration))
+    return {
+        "package_id": "pack-test",
+        "shots": [
+            {
+                "shot_id": "test-shot",
+                "candidate": copy.deepcopy(shot["candidate"]),
+                "reviews": [
+                    {
+                        **review_payload(version=1),
+                        "review_id": "coach-decision-1",
+                        "created_at": "2026-10-20T12:00:00Z",
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_returned_coach_reviews_import_once_and_preserve_suggestion(workspace):
+    payload = register_coach_package(workspace)
+    assert workspace.import_feedback(payload) == {"imported_reviews": 1, "already_imported": 0}
+    assert workspace.import_feedback(payload) == {"imported_reviews": 0, "already_imported": 1}
+    shot = workspace.shot("test-shot")
+    assert len(shot["reviews"]) == 1
+    assert shot["suggestion"]["text"] == "original suggestion"
+    assert shot["reviews"][0]["note"] == "coach correction"
+    assert shot["reviews"][0]["original_reviewed_at"] == "2026-10-20T12:00:00Z"
+
+
+def test_import_failure_rolls_back_without_replacing_live_shot(workspace):
+    payload = register_coach_package(workspace)
+    shot = workspace.shot("test-shot")
+    before = copy.deepcopy(shot)
+    payload["shots"][0]["reviews"].append(
+        {**review_payload(version=2, coach=""), "review_id": "bad"}
+    )
+    with pytest.raises(ValueError):
+        workspace.import_feedback(payload)
+    assert workspace.shot("test-shot") is shot
+    assert shot == before
+    assert json.loads(workspace.path.read_text())["shots"][0] == before
+
+
+def test_import_rejects_unknown_package_or_changed_video(workspace):
+    payload = register_coach_package(workspace)
+    with pytest.raises(ValueError):
+        workspace.import_feedback({**payload, "package_id": "other"})
+    workspace.data["jobs"][0]["source_sha256"] = "b" * 64
+    with pytest.raises(ValueError):
+        workspace.import_feedback(payload)
+    assert not workspace.shot("test-shot")["reviews"]

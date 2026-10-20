@@ -522,9 +522,11 @@ class Handler(BaseHTTPRequestHandler):
                     region=region,
                 )
                 return self.send(201, {"id": job["id"]})
-            if length > 20000:
+            if length > (12 * 1024 * 1024 if parsed.path == "/api/import-feedback" else 20000):
                 raise ValueError("בקשה גדולה מדי")
             payload = json.loads(self.rfile.read(length))
+            if parsed.path == "/api/import-feedback" and not getattr(self.server, "phone", False):
+                return self.send(200, self.studio.store.import_feedback(payload))
             if parsed.path == "/api/new-pair" and not getattr(self.server, "phone", False):
                 with self.studio.store.lock:
                     self.studio.pair_code = f"{secrets.randbelow(100000000):08d}"
