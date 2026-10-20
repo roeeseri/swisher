@@ -243,11 +243,15 @@ def inspect_video(path: Path) -> dict[str, int | float]:
         capture.release()
 
 
-def normalize_browser_video(source: Path, destination: Path) -> None:
+def normalize_browser_video(
+    source: Path, destination: Path, *, max_duration_seconds: float = 125
+) -> None:
     """Finalize MediaRecorder WebM into indexed H.264; retain the original WebM.
 
     Source presentation times are retained, not reconstructed as frame/fps.
     """
+    if not 0 < max_duration_seconds <= 600:
+        raise ValueError("invalid normalization duration limit")
     with av.open(str(source)) as incoming, av.open(str(destination), "w") as outgoing:
         stream = incoming.streams.video[0]
         output = outgoing.add_stream("libx264", rate=stream.average_rate or 30)
@@ -262,8 +266,8 @@ def normalize_browser_video(source: Path, destination: Path) -> None:
                 raise ValueError("recording timestamps are missing")
             if first is None:
                 first = frame.time
-            if frame.time - first > 125:
-                raise ValueError("recording exceeds two minutes")
+            if frame.time - first > max_duration_seconds:
+                raise ValueError("recording exceeds the allowed duration")
             frame.pts = round((frame.time - first) * 90000)
             frame.time_base = output.time_base
             for packet in output.encode(frame):
