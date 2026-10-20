@@ -17,7 +17,8 @@ from uuid import uuid4
 
 from swisher.session import inspect_video, normalize_browser_video
 from swisher.studio import media
-from swisher.studio.store import StudioStore, suggestion
+from swisher.studio.feedback import generate
+from swisher.studio.store import StudioStore, now, suggestion
 
 
 class Studio:
@@ -68,6 +69,55 @@ class Studio:
                             regions[row["index"]] = row["player_region"]
             self.region_cache[key] = regions
         return self.region_cache[key].get(index)
+
+    def feedback_for(self, report_path, report):
+        trace = Path(report_path).parent / "pose.jsonl"
+        if not trace.exists():
+            return {}
+        records = [json.loads(line) for line in trace.read_text().splitlines()]
+        return generate(
+            report["candidates"],
+            records,
+            report["video"]["fps"],
+            report.get("provenance", {}).get("camera_motion_failures", 0) == 0,
+        )
+
+    def refresh_suggestions(self):
+        from collections import Counter
+
+        predictions = {}
+        for job in self.store.snapshot()["jobs"]:
+            report_path = job.get("report") or job.get("existing_report")
+            if not report_path or not Path(report_path).exists():
+                continue
+            report = json.loads(Path(report_path).read_text())
+            predictions[job["id"]] = self.feedback_for(report_path, report)
+        changed = skipped = 0
+        with self.store.lock:
+            backup = self.store.root / "history" / ("feedback_before_" + uuid4().hex + ".json")
+            from swisher.session import SessionStore
+
+            SessionStore._atomic_json(backup, self.store.data)
+            for shot in self.store.data["shots"]:
+                if shot["reviews"]:
+                    skipped += 1
+                    continue
+                proposed = predictions.get(shot["job_id"], {}).get(shot["candidate"]["shot_id"])
+                if proposed is None or proposed == shot["suggestion"]:
+                    continue
+                shot.setdefault("suggestion_history", []).append(
+                    {"updated_at": now(), "suggestion": shot["suggestion"]}
+                )
+                shot["suggestion"] = proposed
+                changed += 1
+            self.store.save()
+            notes = [s["suggestion"] for s in self.store.data["shots"]]
+            return {
+                "updated": changed,
+                "reviewed_preserved": skipped,
+                "available": sum(n["available"] for n in notes),
+                "focus": dict(Counter(n.get("focus", "abstained") for n in notes)),
+            }
 
     def start(self):
         threading.Thread(target=self.work, daemon=True).start()
@@ -189,6 +239,7 @@ class Studio:
                 module.export_metrics(report_path.parent)
         measurements = json.loads(metrics_path.read_text()) if metrics_path.exists() else []
         lookup = {m["proposal_id"]: m for m in measurements}
+        predicted_feedback = self.feedback_for(report_path, report)
         with self.store.lock:
             job["video"] = report["video"]
             job["source_sha256"] = report.get("provenance", {}).get("source_sha256")
@@ -206,7 +257,8 @@ class Studio:
                         "id": uuid4().hex,
                         "job_id": job["id"],
                         "candidate": candidate,
-                        "suggestion": suggestion(candidate, lookup.get(candidate["shot_id"])),
+                        "suggestion": predicted_feedback.get(candidate["shot_id"])
+                        or suggestion(candidate, lookup.get(candidate["shot_id"])),
                         "measurement": lookup.get(candidate["shot_id"]),
                         "reviews": [],
                         "media_status": "queued",
@@ -525,6 +577,10 @@ class Handler(BaseHTTPRequestHandler):
             if length > (12 * 1024 * 1024 if parsed.path == "/api/import-feedback" else 20000):
                 raise ValueError("בקשה גדולה מדי")
             payload = json.loads(self.rfile.read(length))
+            if parsed.path == "/api/refresh-suggestions" and not getattr(
+                self.server, "phone", False
+            ):
+                return self.send(200, self.studio.refresh_suggestions())
             if parsed.path == "/api/import-feedback" and not getattr(self.server, "phone", False):
                 return self.send(200, self.studio.store.import_feedback(payload))
             if parsed.path == "/api/new-pair" and not getattr(self.server, "phone", False):

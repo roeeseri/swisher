@@ -45,7 +45,7 @@ Existing video files (MP4/MOV/WebM/M4V) up to 200MB and ten minutes can also be 
 
 ## Model scope
 
-The existing MediaPipe/RF-DETR pipeline generates shot/release proposals. The initial textual suggestion is a conservative rule derived from visible 2D knee measurements, available only with a release proposal and at least 70% valid pose coverage. It is a prompt for the coach to examine the clip, not a trained technique diagnosis, calibrated confidence or evidence of what caused a miss. Missing/low-quality data produce an abstention. No autonomous coaching or make/miss claim has been added.
+The existing MediaPipe/RF-DETR pipeline generates shot/release proposals. The text engine now derives shot-specific temporal observations from the stored pose trace: a visible arm's post-release hold, torso motion, knee motion and qualified within-video comparisons. It uses fixed experimental rules and conservative feature visibility gates, not trained coaching weights. Missing releases do not automatically block independent knee/torso measurements. Missing reliable motion still produces abstention. The initial single hard-coded cue has been removed. See [the feedback audit](feedback-audit-2026-10-20.md) for provenance, search scope, thresholds and limitations.
 
 ## Existing pilot data
 

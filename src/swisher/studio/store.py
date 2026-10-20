@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import math
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -119,7 +118,28 @@ class StudioStore:
                         if any(r.get("external_review_id") == external_id for r in shot["reviews"]):
                             skipped += 1
                             continue
-                        self.review(identifier, {**row, "version": len(shot["reviews"])})
+                        approved_suggestion = None
+                        if row.get("decision") == "approved":
+                            supplied = item.get("suggestion", {})
+                            known = [shot["suggestion"]] + [
+                                h["suggestion"] for h in shot.get("suggestion_history", [])
+                            ]
+                            approved_suggestion = next(
+                                (
+                                    n
+                                    for n in known
+                                    if n.get("text") == supplied.get("text")
+                                    and n.get("method") == supplied.get("method")
+                                ),
+                                None,
+                            )
+                            if approved_suggestion is None:
+                                raise ValueError("ההערה שאושרה אינה תואמת לגרסה שנמסרה למאמן")
+                        self.review(
+                            identifier,
+                            {**row, "version": len(shot["reviews"])},
+                            approved_suggestion=approved_suggestion,
+                        )
                         shot["reviews"][-1].update(
                             external_review_id=external_id,
                             original_reviewed_at=row.get("created_at"),
@@ -137,7 +157,7 @@ class StudioStore:
                 raise
             return {"imported_reviews": imported, "already_imported": skipped}
 
-    def review(self, identifier, payload):
+    def review(self, identifier, payload, *, approved_suggestion=None):
         with self.lock:
             shot = self.shot(identifier)
             if shot is None:
@@ -153,7 +173,8 @@ class StudioStore:
                 raise ValueError("נדרש מזהה מאמן עד 80 תווים")
             if len(note) > 3000:
                 raise ValueError("הערה ארוכה מדי")
-            if decision == "approved" and not shot["suggestion"]["available"]:
+            original_suggestion = approved_suggestion or shot["suggestion"]
+            if decision == "approved" and not original_suggestion["available"]:
                 raise ValueError("אין הערה מוצעת לאישור. כתבו הערה משלכם")
             if decision == "corrected" and not note:
                 raise ValueError("יש לכתוב את הערת המאמן")
@@ -174,7 +195,8 @@ class StudioStore:
                 "version": len(shot["reviews"]) + 1,
                 "coach": coach,
                 "decision": decision,
-                "note": shot["suggestion"]["text"] if decision == "approved" else note,
+                "note": original_suggestion["text"] if decision == "approved" else note,
+                "suggestion_snapshot": copy.deepcopy(original_suggestion),
                 "start_frame": start,
                 "end_frame": end,
                 "release_frame": release,
@@ -201,30 +223,10 @@ class StudioStore:
 
 
 def suggestion(candidate, measurement):
-    """Descriptive vision evidence only; never claim a trained coaching model."""
-    base = {
-        "available": False,
-        "text": "אין מספיק ראיות להערה אוטומטית. מה המאמן רואה?",
-        "method": "vision_measurement_rules_v1",
-        "evidence": [],
-        "limitations": "היטל דו־ממדי, תלוי זווית צילום. ההצעה אינה אבחון או הוכחת סיבה להחטאה.",
-    }
-    if not measurement or measurement.get("tracking_review_failed"):
-        return base
-    if measurement.get("valid_frame_coverage", 0) < 0.7 or candidate.get("release_frame") is None:
-        return base
-    metrics = measurement.get("metrics") or {}
-    low, high = metrics.get("min_knee_angle_deg"), metrics.get("max_knee_angle_deg")
-    if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in (low, high)):
-        return base
-    if not 0 <= low <= high <= 180:
-        return base
-    return {
-        **base,
-        "available": True,
-        "text": "בדקו את רצף כיפוף ויישור הברכיים בזריקה ואת התיאום שלו עם עליית הידיים.",
-        "evidence": [
-            f"טווח זווית ברך נצפה: {low:.0f}°–{high:.0f}° (אחוזונים 5–95).",
-            "שני צדי הגוף עשויים להשתתף במדידה; זו הצעה לבדיקה חזותית.",
-        ],
-    }
+    """A summary of angle ranges alone is insufficient for a temporal coaching cue."""
+    from swisher.studio.feedback import propose
+
+    return propose(
+        candidate,
+        {"coverage": 0, "frames": [candidate.get("shot_start", 0), candidate.get("shot_end", 0)]},
+    )

@@ -107,8 +107,8 @@ def test_suggestion_abstains_and_has_no_probability():
         "available"
     ]
     result = suggestion({"release_frame": 10}, measurement)
-    assert result["available"] and "confidence" not in result
-    assert "100" in result["evidence"][0]
+    assert not result["available"] and "confidence" not in result
+    assert result["method"] == "pose_temporal_observations_v2"
 
 
 def test_restart_recovers_interrupted_work(workspace):
@@ -335,3 +335,18 @@ def test_import_rejects_unknown_package_or_changed_video(workspace):
     with pytest.raises(ValueError):
         workspace.import_feedback(payload)
     assert not workspace.shot("test-shot")["reviews"]
+
+
+def test_import_approval_preserves_the_note_the_coach_actually_saw(workspace):
+    payload = register_coach_package(workspace)
+    shot = workspace.shot("test-shot")
+    original = copy.deepcopy(shot["suggestion"])
+    payload["shots"][0]["suggestion"] = original
+    payload["shots"][0]["reviews"][0]["decision"] = "approved"
+    shot["suggestion_history"] = [{"suggestion": original, "updated_at": "old"}]
+    shot["suggestion"] = {"available": True, "text": "new observation", "method": "new-engine"}
+    workspace.import_feedback(payload)
+    assert shot["reviews"][0]["decision"] == "approved"
+    assert shot["reviews"][0]["note"] == "original suggestion"
+    assert shot["reviews"][0]["suggestion_snapshot"] == original
+    assert shot["suggestion"]["text"] == "new observation"
