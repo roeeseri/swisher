@@ -64,4 +64,10 @@ Import reuses existing reports without rerunning vision, extracts 207 unverified
 
 ## Tracking in review media
 
-Shot clips render the existing per-frame pose trace as cyan body edges and yellow joints; green rings mark ball observations. The release image uses the same exact-frame observations and a shooter crop when a tracked region exists. Hidden joints and frames without a ball observation are left unmarked. This does not add a verified continuous ball tracker or interpolate missing observations. Model proposals and raw source videos remain unchanged. The first rollout regenerates the 207 previews with these markings; no vision rerun is required.
+Shot clips render the existing per-frame pose trace as thin cyan body edges and small yellow joints; green rings mark ball observations. The release image is an unmarked source image, cropped around the shooter when a tracked region exists. Tracking graphics are restricted to the video preview. Hidden joints and frames without a ball observation are left unmarked. This does not add a verified continuous ball tracker or interpolate missing observations. Model proposals and raw source videos remain unchanged. The first rollout regenerates the 207 previews with these markings; no vision rerun is required.
+
+## Coach interface refinement — 2026-10-20
+
+The orange suggestion panel contains only the proposed note. Supporting measurements remain available in the collapsed details panel. Coach review now provides a searchable queue, previous/next navigation, an accessible release-frame scrubber, a reusable coach identifier, optional outcome labels, and conditional comment editing. Approval and replacement comments advance to the next candidate; replacement comments cannot be empty. Unsaved edits stay protected and all backend review versions remain intact. A selected decision reveals the sticky save action.
+
+All 207 pilot clips were regenerated with thinner tracking graphics. Still images have no tracking overlay. Desktop browser checks verified approval, correction validation and next-shot progression in an isolated workspace. A 390px viewport check verified no horizontal overflow; this is responsive layout testing, not physical phone camera acceptance.

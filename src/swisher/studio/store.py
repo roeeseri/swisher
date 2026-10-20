@@ -33,7 +33,7 @@ class StudioStore:
         for shot in self.data["shots"]:
             if shot["media_status"] == "processing":
                 shot["media_status"] = "queued"
-            if shot.get("visual_version") != 1:
+            if shot.get("visual_version") != 2:
                 shot["media_status"] = "queued"
         self.save()
 

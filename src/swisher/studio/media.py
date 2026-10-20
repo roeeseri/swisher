@@ -98,23 +98,13 @@ def draw_tracking(image, pose=None, balls=None):
         for a, b in EDGES:
             if a in xy and b in xy and min(visibility.get(a, 0), visibility.get(b, 0)) >= 0.5:
                 pa, pb = tuple(round(v) for v in xy[a]), tuple(round(v) for v in xy[b])
-                cv2.line(image, pa, pb, (255, 190, 40), 5, cv2.LINE_AA)
+                cv2.line(image, pa, pb, (255, 190, 40), 2, cv2.LINE_AA)
         for name, point in xy.items():
             if visibility.get(name, 0) >= 0.5:
                 cv2.circle(
-                    image, tuple(round(v) for v in point), 6, (20, 225, 255), -1, cv2.LINE_AA
+                    image, tuple(round(v) for v in point), 3, (20, 225, 255), -1, cv2.LINE_AA
                 )
     for ball in balls or []:
         point = tuple(round(v) for v in ball["center"])
-        cv2.circle(image, point, 14, (70, 240, 90), 3, cv2.LINE_AA)
-        cv2.putText(
-            image,
-            "BALL",
-            (point[0] + 17, point[1] - 12),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (70, 240, 90),
-            2,
-            cv2.LINE_AA,
-        )
+        cv2.circle(image, point, 12, (70, 240, 90), 2, cv2.LINE_AA)
     return image

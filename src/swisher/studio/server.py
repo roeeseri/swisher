@@ -116,11 +116,9 @@ class Studio:
                     index = review["release_frame"] if review else c.get("release_frame")
                     if index is None:
                         index = max(start, min(end, c.get("motion_frame", start)))
-                    media.frame(
-                        Path(job["source"]), folder / "frame.jpg", index, visuals=self.visuals(job)
-                    )
+                    media.frame(Path(job["source"]), folder / "frame.jpg", index)
                     with self.store.lock:
-                        shot["visual_version"] = 1
+                        shot["visual_version"] = 2
                         shot["media_status"] = (
                             "ready" if len(shot["reviews"]) == version else "queued"
                         )
@@ -376,14 +374,13 @@ class Handler(BaseHTTPRequestHandler):
                         if not 0 <= index < job["video"]["frame_count"]:
                             raise ValueError()
                         folder.mkdir(parents=True, exist_ok=True)
-                        target = folder / f"tracked_{index}.jpg"
+                        target = folder / f"clean_{index}.jpg"
                         if not target.exists():
                             media.frame(
                                 Path(job["source"]),
                                 target,
                                 index,
                                 self.studio.frame_region(job, index),
-                                self.studio.visuals(job),
                             )
                     except (KeyError, ValueError):
                         return self.send(400, {"error": "פריים לא תקין"})

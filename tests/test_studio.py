@@ -263,4 +263,4 @@ def test_tracking_drawing_does_not_invent_hidden_joints_or_balls():
     pose["visibility_by_name"] = {"ls": 0.9, "le": 0.9}
     draw_tracking(image, pose, [{"center": [140, 140], "confidence": 0.8}])
     assert image[60, 60, 0] > 100  # visible skeletal edge
-    assert image[140, 154, 1] > 150  # observed ball ring
+    assert image[140, 152, 1] > 150  # observed ball ring
