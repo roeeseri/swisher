@@ -1,5 +1,6 @@
 """Compare release proposals against explicitly provisional visual reference intervals."""
 from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -37,8 +38,8 @@ def main():
     for name in ['IMG_1083','IMG_1078','IMG_1068']:
         current=root/name/'report.json'
         if not current.exists():continue
-        ref=json.load(open(f'artifacts/release_study/{name}_reference.json'))
-        old=json.load(open(f'artifacts/club_pilot/{name}/report.json'))
+        ref=json.loads(Path(f'artifacts/release_study/{name}_reference.json').read_text())
+        old=json.loads(Path(f'artifacts/club_pilot/{name}/report.json').read_text())
         new=json.loads(current.read_text())
         rows.append({'video':name,'role':'development' if name=='IMG_1083' else 'holdout',
                      'baseline':evaluate(old,ref),'updated':evaluate(new,ref)})

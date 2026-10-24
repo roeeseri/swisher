@@ -63,6 +63,7 @@ class Pose:
             base_options=mp.tasks.BaseOptions(model_asset_path=str(self.path), delegate=delegate),
             running_mode=mp.tasks.vision.RunningMode.IMAGE,
             num_poses=1,
+            output_segmentation_masks=True,
             min_pose_detection_confidence=0.5,
             min_pose_presence_confidence=0.5,
         )
@@ -80,7 +81,14 @@ class Pose:
             if prediction.pose_landmarks
             else None
         )
-        return SimpleNamespace(pose_landmarks=landmarks)
+        return SimpleNamespace(
+            pose_landmarks=landmarks,
+            segmentation_mask=(
+                prediction.segmentation_masks[0].numpy_view().copy()
+                if prediction.segmentation_masks
+                else None
+            ),
+        )
 
     def __enter__(self):
         return self

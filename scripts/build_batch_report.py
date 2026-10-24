@@ -1,5 +1,6 @@
 """Build a local Hebrew results page from actual Swisher batch reports."""
 from __future__ import annotations
+
 import csv
 import html
 import json

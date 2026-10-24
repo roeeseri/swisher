@@ -5,6 +5,7 @@ import http.client
 import json
 import threading
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import av
 import cv2
@@ -162,6 +163,7 @@ def api(tmp_path):
         connection.close()
         return response.status, data
 
+    request.server_port = server.server_port
     yield studio, request
     server.shutdown()
     server.server_close()
@@ -350,3 +352,83 @@ def test_import_approval_preserves_the_note_the_coach_actually_saw(workspace):
     assert shot["reviews"][0]["note"] == "original suggestion"
     assert shot["reviews"][0]["suggestion_snapshot"] == original
     assert shot["suggestion"]["text"] == "new observation"
+
+
+def test_training_api_permissions_voice_and_local_delete(api):
+    studio, request = api
+    assert request("GET", "/coach")[0] == 200
+    assert request("GET", "/api/training?player=p1&view=left")[0] == 403
+    assert (
+        request(
+            "POST",
+            "/api/player",
+            {"player": "p1", "minor": True, "permission": True, "consent_reference": "ref"},
+        )[0]
+        == 400
+    )
+    assert (
+        request(
+            "POST",
+            "/api/player",
+            {
+                "player": "p1",
+                "minor": True,
+                "permission": True,
+                "guardian_consent": True,
+                "consent_reference": "ref",
+            },
+        )[0]
+        == 201
+    )
+    code, data = request("POST", "/api/voice", {"player": "p1", "view": "left", "text": "משוב"})
+    assert code == 200
+    assert json.loads(data)["generated_diagnosis"] is False
+    code, data = request("GET", "/api/training?player=p1&view=left", cookie=True)
+    assert code == 200 and json.loads(data)["baseline"] == []
+    assert request("POST", "/api/erase-local", {"confirmation": "yes"})[0] == 400
+    assert request("POST", "/api/erase-local", {"confirmation": "DELETE LOCAL DATA"})[0] == 200
+    assert not studio.store.snapshot()["players"]
+
+
+def test_real_video_upload_requires_registered_permission(api, tmp_path):
+    studio, request = api
+    path = tmp_path / "synthetic.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30, (64, 64))
+    for _ in range(30):
+        writer.write(np.zeros((64, 64, 3), dtype=np.uint8))
+    writer.release()
+    body = path.read_bytes()
+
+    def upload():
+        conn = http.client.HTTPConnection("127.0.0.1", request.server_port)
+        conn.request(
+            "POST",
+            "/api/upload?name=synthetic.mp4&player=p1&view=left&consent=yes",
+            body=body,
+            headers={"X-Swisher-Token": studio.token, "Content-Type": "video/mp4"},
+        )
+        r = conn.getresponse()
+        code = r.status
+        r.read()
+        conn.close()
+        return code
+
+    assert upload() == 400
+    assert not (studio.store.root / "uploads").exists()
+    assert (
+        request(
+            "POST",
+            "/api/player",
+            {
+                "player": "p1",
+                "minor": False,
+                "permission": True,
+                "consent_reference": "synthetic-test",
+            },
+        )[0]
+        == 201
+    )
+    assert upload() == 201
+    job = studio.store.snapshot()["jobs"][0]
+    assert job["status"] == "queued"
+    assert Path(job["source"]).read_bytes() == body

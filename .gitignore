@@ -36,3 +36,16 @@ sources/
 # Private review images and superseded document renders
 outputs/*/
 *.log
+
+release/
+backups/
+*.zip
+*.sqlite*
+*.db
+.streamlit/secrets.toml
+*.p12
+*.pfx
+
+# Historical Python source, never runtime data
+!archive/backup-2026-09-03/src/swisher/data/
+!archive/backup-2026-09-03/src/swisher/data/*.py

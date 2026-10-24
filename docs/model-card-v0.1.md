@@ -16,14 +16,6 @@ when ball-to-wrist separation grows while the ball moves upward. Make or miss is
 reported only for a clear downward crossing of the rim plane; otherwise the
 system returns `unknown`.
 
-## Current measured run
-
-On a 320×240 broadcast clip, RF-DETR found a person in 25/25 sampled frames and
-a sports ball in 10/25. Pose coverage improved from 38/146 frames with the
-full-frame baseline to 55/146 after detection, crop selection and the Heavy pose
-model. The system still abstained because 37.7% pose coverage is below the 55%
-gate. This is expected for low-resolution multi-player broadcast footage.
-
 ## Appropriate use
 
 - Short, fixed-camera videos.

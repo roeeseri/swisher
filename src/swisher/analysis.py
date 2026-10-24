@@ -199,6 +199,14 @@ def analyze_video(
             prediction = pose.process(crop) if crop.size and eligible else None
             landmarks = prediction.pose_landmarks if prediction is not None else None
             record = _extract_record(landmarks, crop_box, index)
+            from swisher.silhouette import compare
+
+            mask = getattr(prediction, "segmentation_mask", None)
+            record["body_envelope"] = (
+                compare(mask, landmarks.landmark)
+                if mask is not None and landmarks
+                else {"available": False, "reason": "no segmentation"}
+            )
             record["player_region"] = active_region
             record["camera_tracking_valid"] = active_region is not None if player_region else True
             record["timestamp_ms"] = float(capture.get(cv2.CAP_PROP_POS_MSEC))

@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from swisher.session import inspect_video, normalize_browser_video
-from swisher.studio import media
+from swisher.studio import media, training
 from swisher.studio.feedback import generate
 from swisher.studio.store import StudioStore, now, suggestion
 
@@ -349,11 +349,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(
                 200, Path(__file__).with_name("pair.html").read_text(), "text/html; charset=utf-8"
             )
-        if parsed.path == "/":
+        if parsed.path in ("/", "/coach"):
             token = (
                 self.client_token() if getattr(self.server, "phone", False) else self.studio.token
             )
-            page = Path(__file__).with_name("index.html").read_text().replace("__TOKEN__", token)
+            page = (
+                Path(__file__)
+                .with_name("coach.html" if parsed.path == "/coach" else "index.html")
+                .read_text()
+                .replace("__TOKEN__", token)
+            )
             return self.send(200, page, "text/html; charset=utf-8", cookie=token)
         if not self.authorized():
             return self.send(403, {"error": "פתחו את מסך הבית תחילה"})
@@ -365,6 +370,14 @@ class Handler(BaseHTTPRequestHandler):
                     "code": self.studio.pair_code,
                     "expires_seconds": max(0, int(self.studio.pair_expires - time.monotonic())),
                 },
+            )
+        if parsed.path == "/api/training":
+            q = parse_qs(parsed.query)
+            return self.send(
+                200,
+                training.dashboard(
+                    self.studio.store, q.get("player", [""])[0], q.get("view", [""])[0]
+                ),
             )
         if parsed.path == "/api/state":
             state = self.studio.store.snapshot()
@@ -520,6 +533,7 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 if query.get("consent") != ["yes"]:
                     raise ValueError("נדרש אישור צילום ושימוש לפני העלאה")
+                training.require_permission(self.studio.store, query.get("player", [""])[0])
                 region = json.loads(query.get("region", ["null"])[0])
                 if region is not None and (
                     not isinstance(region, list)
@@ -577,6 +591,27 @@ class Handler(BaseHTTPRequestHandler):
             if length > (12 * 1024 * 1024 if parsed.path == "/api/import-feedback" else 20000):
                 raise ValueError("בקשה גדולה מדי")
             payload = json.loads(self.rfile.read(length))
+            if parsed.path == "/api/erase-local" and not getattr(self.server, "phone", False):
+                result = training.erase_local_workspace(
+                    self.studio.store, payload.get("confirmation")
+                )
+                self.studio.visual_cache.clear()
+                self.studio.region_cache.clear()
+                return self.send(200, result)
+            if parsed.path == "/api/player":
+                return self.send(201, training.register(self.studio.store, payload))
+            if parsed.path == "/api/voice":
+                state = training.dashboard(
+                    self.studio.store, str(payload.get("player", "")), str(payload.get("view", ""))
+                )
+                return self.send(
+                    200,
+                    {
+                        "text": training.respond(state, payload.get("text", "")),
+                        "mode": "bounded_commands",
+                        "generated_diagnosis": False,
+                    },
+                )
             if parsed.path == "/api/refresh-suggestions" and not getattr(
                 self.server, "phone", False
             ):

@@ -1,118 +1,48 @@
-# Swisher — Coach Studio 0.3
+# Swisher — private team prototype
 
-סביבת פיילוט מקומית למאמן ולקבוצה: צילום או העלאה → זיהוי גוף → הצעות
-תיוג → אישור המאמן → ניתוח זריקה ודגש מתועד. לא מאמן אוטונומי ולא מוצר
-מובייל שהושק. יש צורך באימות על סרטוני האימון שלכם לפני הצגת הבטחת דיוק.
+Canonical repository: https://github.com/roeeseri/swisher
 
-## Studio לצילום ולסקירת מאמן · פיילוט חדש
+Team documents: https://drive.google.com/drive/folders/1Obp0c-fbrVR5MUCPlmz2-kpAsoyX6jSA
 
-הפעלה: `PYTHONPATH=src .venv/bin/python -m swisher.studio.server --port 8770`, ואז פתחו `http://127.0.0.1:8770`.
+Code backup: https://drive.google.com/file/d/1NZbIV9aidaflLY5lrlBZT8H10zTWkuYt/view
 
-- העלאת סרטון מפעילה תור עיבוד אוטומטי; צילום דפדפן מעביר מקטעים תוך כדי האימון.
-- המאמן מקבל קטע עם קווי גוף וכדור מזוהה, פריים שחרור והערה ניסיונית לאישור או להחלפה.
-- נשמרים תיקוני פריימים, תוצאת זריקה, החלטות המאמן והיסטוריית גרסאות; אפשר להוסיף זריקה חסרה ולייצא תיוגים.
-- צילום מטלפון למחשב נתמך במצב LAN HTTPS עם קוד צימוד והגדרת אמון בתעודה מקומית בידי בעל הטלפון. נדרשת בדיקת קבלה במכשיר פיזי.
-- ההערות הראשונות נגזרות מכללי מדידה דו־ממדית; אין עדיין מודל מאומן לחיזוי הערות מאמן או אימון משקלים אוטומטי.
+Local basketball video review and coaching prototype. Observations and feedback require coach review. Software tests do not establish coaching accuracy or player improvement.
 
-[הפעלה, צימוד טלפון, מגבלות ובדיקות](docs/studio-pilot.md).
+## Run
 
-## הפעלה מהירה
+Use Python 3.11 or 3.12:
 
-**שותפים חדשים מתחילים כאן:** [מסמך המוצר ותוכנית השנה (PDF)](docs/Swisher_Partner_Brief_HE.pdf),
-[מקור המסמך לעריכה](docs/SWISHER_PARTNER_BRIEF_HE.md),
-ו[התקנה ועבודה משותפת](CONTRIBUTING.md).
-
-המאגר מיועד לשלושת השותפים ולפיילוט עם קבוצה. חשבונות מאמן ושחקנים,
-שיעורי בית ומאמן קולי הם מפת הדרך; אינם יכולות שכבר הושקו.
-
-מתיקיית הפרויקט:
-
-```bash
+```sh
+python3.11 -m venv .venv
 source .venv/bin/activate
-python -m streamlit run app.py
+python -m pip install -e '.[dev]'
+python -m swisher.studio.server --port 8770 --root /absolute/path/to/private-swisher-data
 ```
 
-ב־Mac אפשר גם ללחוץ פעמיים על `scripts/start_swisher.command`.
+Open http://127.0.0.1:8770/coach for the player flow and http://127.0.0.1:8770/ for coach review. Register an anonymous player and consent before uploading a clip. Model weights download separately on first inference; network access is required. No API keys are needed. `.env.example` documents that dotenv is not automatically loaded.
 
-## מסכי המערכת
+Alternative interface: `python -m streamlit run app.py`.
 
-1. **אימון חדש** — מזהי שחקן ומאמן, אישור שמירה, העלאה או צילום ישיר.
-2. **סביבת ניתוח** — בחירת אזור שחקן, סריקה, שלד, הצעות ותיוג פריים־פריים.
-3. **לקראת הצילום** — כללי צילום והגבולות של הפיילוט.
+## Structure
 
-צילום דפדפן משתמש ב־MediaRecorder, ללא קול. ניתן להפעיל שלד חי מקומי
-באמצעות MediaPipe Tasks Vision 1.0.1 ו־Pose Lite. נדרשת הרשאת מצלמה
-מהמשתמש. המודל נטען דרך jsDelivr ו־Google Storage; אין העלאת וידאו אליהם.
-הניתוח המלא מתבצע לאחר סיום ההקלטה. ההקלטה והשלד החי דורשים בדיקת
-קבלה בדפדפן ובמצלמה של המשתמש; בדיקות הקוד אינן מחליפות אותה.
+- `src/swisher/`: current analysis, storage, feedback and local Studio.
+- `tests/`: automated tests, synthetic media and mocked inference.
+- `app.py`, `pages/`, `components/`: Streamlit interface.
+- `scripts/`: launch, evaluation and reporting tools.
+- `docs/`: MVP plan and historical technical documents.
+- `archive/`: older source variants for reference; excluded from runtime and current tests.
 
-השרת קשור ל־127.0.0.1. אין לפתוח אותו לאינטרנט ללא אימות משתמשים,
-הצפנה ובדיקת אבטחה. כדי להביא צילום מהטלפון: צלמו והעבירו את הקובץ
-למחשב, ואז העלו אותו. צילום מרחוק מהטלפון לא הוקם בגרסה זו.
+## Verify
 
-## תהליך הפיילוט
-
-1. צלם סרטון רציף ב־1080p/60fps עם מצלמה יציבה.
-2. פתח ״אימון חדש״ ושמור סשן עם מזהים ללא שמות מלאים.
-3. פתח ״סביבת ניתוח״ ולחץ ״זהה גוף והצע תיוגים״. אם יש כמה שחקנים,
-   סמן אזור שבו רק הזורק נמצא. אל תשנה מיקום מצלמה במהלך הסט.
-4. בחר הצעה ובדוק בפריימים: התחלה, שחרור אם הוא נראה, סוף ותוצאה.
-   אפשר להוסיף זריקה ידנית אם המודל החמיץ אותה. שמור דגש מאמן בנפרד.
-5. לחץ ״נתח את הזריקה המאושרת״. התחל ב־1–3 זריקות.
-6. בדוק את הסרטון המסומן ואת דוח ה־JSON לפני ניתוח הסשן כולו.
-
-הדאטה נשמר תחת `data/sessions/<session_id>/` ואינו נכנס ל־Git.
-
-## מה עובד
-
-- העלאת MP4/MOV וסשנים רציפים.
-- Pose estimation עם MediaPipe.
-- MediaPipe Tasks 1.0.1 מותקן ל־Apple Silicon; ניתוח Heavy עם Metal ו־RGBA.
-- זיהוי שחקן וכדור עם RF-DETR.
-- הצעות חלונות זריקה לפי יד מורמת; שחרור מוצע רק עם ראיות כדור–יד.
-- מדדי מרפק, ברך ונטיית גו בהיטל דו־ממדי, ללא גובה קפיצה או כוח רגליים.
-- תיוג אמת קרקע ותיקון גרסאות.
-- חיתוך אוטומטי של זריקה מתוך סשן.
-- וידאו מסומן ודוח JSON לכל זריקה.
-- הימנעות מהמלצה כשהראיות אינן מספיקות.
-- שמירת גרסאות תיוג והיסטוריה; ניתוחים מקושרים לגרסת התיוג ולפריימי המקור.
-- קובץ עקבות pose לכל סריקה, hash של מקור, הגדרות מודל וזמן ריצה.
-
-הצעות עדיין יכולות לבלבל זריקה עם תנועה אחרת. make/miss נשאר unknown
-עד תיוג מאמן. ההמלצות הן הצעות ניסיוניות לבדיקה, לא הבטחת שיפור.
-
-## מה עדיין דורש אימות
-
-- זיהוי הכדור בתנועה מהירה וב־motion blur.
-- זיהוי release מול פריימים שסומנו על ידי מאמן.
-- make/miss על מגוון זוויות צילום.
-- התאמת עצות המאמן לשחקנים אמיתיים.
-- עיבוד מהיר מספיק לסשן מלא.
-
-אין להשתמש בגרסה זו כאבחון מקצועי או רפואי. היא סביבת פיילוט לאיסוף ראיות
-ולשיפור המודלים.
-
-## בדיקות
-
-```bash
+```sh
 python -m pytest -q
-python -m ruff check .
+python -m ruff check app.py src tests pages scripts
 ```
 
-הסקירה העדכנית: `docs/model-review-2026-09-07.md`.
-מסמכי v0.1 נשמרו כהיסטוריה; אין להסתמך עליהם כהצהרת יכולות נוכחית.
+Read [RUN_MVP.md](RUN_MVP.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [recovery notes](docs/RECOVERY.md). Historical documents may describe superseded dependencies or previous validation; use pyproject.toml for current requirements.
 
-## מה נבדק ב־0.3
+## Team workflow
 
-31 בדיקות: שמירה, הסכמה לפני כתיבה, מניעת דריסת מקור, היסטוריית תיוג,
-המרת WebM, רצפי הצעות, אי־ודאות, שחרור ללא חציית פערי זמן, והזרימה
-המלאה במבחן UI עם מנוע בדיקה מדומה. בנוסף בוצעה הרצת Vision אמיתית
-על 146 פריימים של דוגמה ישנה: הסתיימה בהימנעות, ללא דגש שגוי.
+Use GitHub branches and pull requests for code. Use Google Drive for documents and dated ZIP backups. Invite named collaborators individually; keep access restricted.
 
-בהתקנה הישנה, השוואת Full/Heavy על 30 פריימים של אותה דוגמה: חציון כ־25/71 מילישניות
-ל־pose בלבד, עם 10% כיסוי בשניהם. זה קליפ שידור קטן עם ציורים קיימים,
-ללא אמת קרקע. זו בדיקת הרצה בלבד — לא הוכחת איכות ולא נימוק להחלפת מודל.
-
-בבדיקת הסיום, MediaPipe Tasks 1.0.1 ו־RF-DETR עיבדו את כל 146 הפריימים
-של אותה דוגמה בכ־11 שניות, והמערכת נמנעה ממשוב. בדיקת תמונה עם Metal
-הצליחה; בדיקת התלויות נקייה. אין להסיק מכאן קצב עבודה על וידאו 1080p.
+Never commit recordings, player information, consent forms, measurements, credentials, `.env`, model weights or runtime workspaces. Store private runtime data outside this repository. This is a local prototype; do not expose the server to the public internet.
